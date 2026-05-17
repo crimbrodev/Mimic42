@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mimic42</title>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top, #1a1a1a 0%, #050505 70%);
+      font-family: Arial, sans-serif;
+      color: white;
+      position: relative;
+    }
+
+    .glow {
+      position: absolute;
+      width: 500px;
+      height: 500px;
+      background: rgba(120, 0, 255, 0.18);
+      filter: blur(120px);
+      border-radius: 50%;
+      animation: pulse 6s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        transform: scale(1);
+        opacity: 0.6;
+      }
+      50% {
+        transform: scale(1.2);
+        opacity: 1;
+      }
+    }
+
+    .container {
+      text-align: center;
+      z-index: 2;
+      padding: 40px;
+      max-width: 900px;
+    }
+
+    h1 {
+      font-size: 96px;
+      font-weight: 800;
+      letter-spacing: 4px;
+      margin-bottom: 20px;
+      text-shadow: 0 0 25px rgba(180, 120, 255, 0.6);
+    }
+
+    .subtitle {
+      font-size: 24px;
+      color: #cfcfcf;
+      margin-bottom: 30px;
+      line-height: 1.5;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 12px 24px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(10px);
+      color: #9f7cff;
+      font-size: 14px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    .footer {
+      margin-top: 40px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    @media (max-width: 700px) {
+      h1 {
+        font-size: 56px;
+      }
+
+      .subtitle {
+        font-size: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="glow"></div>
+
+  <div class="container">
+    <h1>Mimic42</h1>
+
+    <div class="subtitle">
+      Будущий проект автономных нейроагентов,<br>
+      мимикрирующих под настоящих 42 братух<br>
+      и продвигающих идеи 1Б42П.
+    </div>
+
+    <div class="tag">
+      Project Infiltration • 1Б42П
+    </div>
+
+    <div class="footer">
+      Сайт находится в разработке
+    </div>
+  </div>
+
+</body>
+</html>
