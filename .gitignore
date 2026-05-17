@@ -1,0 +1,111 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.template
+*.local
+*.secret
+secrets/
+
+# Telegram / Telethon user sessions
+*.session
+*.session-journal
+sessions/
+telegram-sessions/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ruff_cache/
+.ty/
+.mypy_cache/
+.pyre/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Python packaging and build outputs
+build/
+dist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv-cache/
+
+# Node / TypeScript frontend
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+*.tsbuildinfo
+vite.config.*.timestamp-*
+vite.config.*.mtime-*
+
+# Frontend build outputs
+.next/
+.nuxt/
+.svelte-kit/
+.astro/
+out/
+storybook-static/
+coverage/
+
+# Playwright / browser testing
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Local databases and state
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+data/
+local-data/
+
+# Logs and runtime files
+logs/
+*.log
+*.pid
+*.pid.lock
+*.seed
+*.stackdump
+
+# Generated media and temporary artifacts
+tmp/
+temp/
+.tmp/
+.cache/
+artifacts/
+downloads/
+uploads/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Docker / deployment local overrides
+docker-compose.override.yml
+render.local.yaml
