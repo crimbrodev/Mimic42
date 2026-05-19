@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
+
 
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
@@ -28,7 +30,7 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
-    llm_model: str = Field(default="openai:gpt-4.1-mini", min_length=1)
+    llm_model: str = Field(default="openrouter/free", min_length=1)
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
 
@@ -88,10 +90,12 @@ class MimicAgentRuntime:
         config: AgentRuntimeConfig,
         telegram_client: TelegramClientLike,
         langchain_agent: LangChainAgentLike,
+        memory_service: MemoryServiceLike | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
         self._langchain_agent = langchain_agent
+        self._memory_service = memory_service or RuntimeMemoryService()
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -142,20 +146,26 @@ class MimicAgentRuntime:
             await self.start()
 
         async with self._trigger_lock:
+            messages = await self._memory_service.build_messages(
+                agent_id=self.config.agent_id,
+                peer=trigger.peer,
+                user_text=trigger.text,
+            )
             response = await self._langchain_agent.ainvoke(
                 {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": trigger.text,
-                        }
-                    ]
+                    "messages": messages,
                 }
             )
             response_text = _extract_response_text(response)
             sent_message = await self._telegram_client.send_message(
                 trigger.peer,
                 response_text,
+            )
+            await self._memory_service.save_turn(
+                agent_id=self.config.agent_id,
+                peer=trigger.peer,
+                user_text=trigger.text,
+                assistant_text=response_text,
             )
 
         return AgentTriggerResult(

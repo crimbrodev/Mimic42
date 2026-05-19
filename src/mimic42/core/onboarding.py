@@ -39,7 +39,6 @@ class AgentProfileInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     soul_prompt: str = Field(min_length=1, max_length=20_000)
     system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, min_length=1, max_length=20_000)
-    llm_model: str = Field(default="openai:gpt-4.1-mini", min_length=1, max_length=200)
 
 
 class OnboardingSession(BaseModel):
@@ -54,7 +53,6 @@ class OnboardingSession(BaseModel):
     name: str | None = None
     soul_prompt: str | None = None
     system_prompt: str | None = None
-    llm_model: str | None = None
 
 
 class OnboardingPublicStatus(BaseModel):
@@ -146,10 +144,12 @@ class AgentOnboardingService:
         repository: OnboardingRepository | None = None,
         telegram_factory: TelegramAuthClientFactory,
         cipher: SecretCipher | None = None,
+        llm_model: str = "openrouter/free",
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository()
         self._telegram_factory = telegram_factory
         self._cipher = cipher or PlainTextCipher()
+        self._llm_model = llm_model
 
     async def request_telegram_code(
         self,
@@ -222,7 +222,6 @@ class AgentOnboardingService:
         session.name = profile.name
         session.soul_prompt = profile.soul_prompt
         session.system_prompt = profile.system_prompt
-        session.llm_model = profile.llm_model
         await self._repository.save(session)
 
         return AgentStatus(
@@ -233,7 +232,7 @@ class AgentOnboardingService:
 
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)
-        if not session.system_prompt or not session.soul_prompt or not session.llm_model:
+        if not session.system_prompt or not session.soul_prompt:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
 
         return AgentRuntimeConfig(
@@ -243,7 +242,7 @@ class AgentOnboardingService:
             telegram_api_id=session.api_id,
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),
-            llm_model=session.llm_model,
+            llm_model=self._llm_model,
             system_prompt=session.system_prompt,
             soul_prompt=session.soul_prompt,
         )

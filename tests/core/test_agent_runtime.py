@@ -68,6 +68,30 @@ class FakeLangChainAgent:
         }
 
 
+class FakeRuntimeMemoryService:
+    def __init__(self) -> None:
+        self.saved_turns: list[tuple[UUID, str, str, str]] = []
+
+    async def build_messages(
+        self,
+        *,
+        agent_id: UUID,
+        peer: str,
+        user_text: str,
+    ) -> list[dict[str, str]]:
+        return [{"role": "user", "content": user_text}]
+
+    async def save_turn(
+        self,
+        *,
+        agent_id: UUID,
+        peer: str,
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        self.saved_turns.append((agent_id, peer, user_text, assistant_text))
+
+
 class FakeIncomingEvent:
     def __init__(self, *, chat_id: int = 10, message_id: int = 42, text: str = "hello") -> None:
         self.chat_id = chat_id
@@ -86,7 +110,7 @@ def make_config(agent_id: UUID | None = None, owner_id: UUID | None = None) -> A
         telegram_session_name="sessions/test-agent",
         telegram_api_id=12345,
         telegram_api_hash="hash",
-        llm_model="openai:gpt-4.1-mini",
+        llm_model="openrouter/free",
         system_prompt="Base system prompt",
         soul_prompt="Quiet direct style",
     )
@@ -158,6 +182,23 @@ async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> No
                 }
             ]
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_trigger_persists_turn_to_memory() -> None:
+    memory = FakeRuntimeMemoryService()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=FakeLangChainAgent(response="memory reply"),
+        memory_service=memory,
+    )
+
+    await runtime.trigger_message(AgentTrigger(peer="chat", text="remember this"))
+
+    assert memory.saved_turns == [
+        (runtime.config.agent_id, "chat", "remember this", "memory reply")
     ]
 
 

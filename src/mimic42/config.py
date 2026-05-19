@@ -9,10 +9,17 @@ class Settings(BaseSettings):
     environment: str = Field(default="development")
     host: str = "127.0.0.1"
     port: int = Field(default=8000, gt=0, le=65535)
+    llm_model: str = "openrouter/free"
+    database_connection_string: str | None = Field(
+        default=None,
+        validation_alias="DATABASE_CONNECTION_STRING",
+    )
+    mem0_api_key: str | None = Field(default=None, validation_alias="MEM0_API_KEY")
+    openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+    secret_key: str | None = Field(default=None, validation_alias="SECRET_KEY")
 
     model_config = SettingsConfigDict(
         env_file=".env",
-        env_prefix="MIMIC42_",
         extra="ignore",
+        populate_by_name=True,
     )
-
