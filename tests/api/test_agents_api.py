@@ -59,6 +59,19 @@ class FakeAgentManager:
             state=item.state,
         )
 
+    async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentStatus]:
+        statuses = []
+        for item in self.created.values():
+            if owner_id is None or item.config.owner_id == owner_id:
+                statuses.append(
+                    AgentStatus(
+                        agent_id=item.config.agent_id,
+                        owner_id=item.config.owner_id,
+                        state=item.state,
+                    )
+                )
+        return statuses
+
     async def trigger_message(
         self,
         agent_id: UUID,

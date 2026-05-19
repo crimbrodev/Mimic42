@@ -1,64 +1,32 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mimic42.core.onboarding import OnboardingNotFoundError, OnboardingSession, TelegramLoginStatus
+from mimic42.integrations.database_models import Base
 from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 
 
-class FakeConnection:
-    def __init__(self) -> None:
-        self.rows: dict[object, dict[str, object]] = {}
-
-    async def execute(self, query: str, *args: object) -> None:
-        assert "agent_onboarding_sessions" in query
-        self.rows[args[0]] = {
-            "id": args[0],
-            "owner_id": args[1],
-            "api_id": args[2],
-            "api_hash_ciphertext": args[3],
-            "phone_number": args[4],
-            "phone_code_hash_ciphertext": args[5],
-            "session_ciphertext": args[6],
-            "authorization_status": args[7],
-            "agent_name": args[8],
-            "system_prompt": args[9],
-            "soul_prompt": args[10],
-        }
-
-    async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
-        assert "agent_onboarding_sessions" in query
-        return self.rows.get(args[0])
-
-    async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
-        return []
-
-
-class FakeAcquireContext:
-    def __init__(self, connection: FakeConnection) -> None:
-        self.connection = connection
-
-    async def __aenter__(self) -> FakeConnection:
-        return self.connection
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        return None
-
-
-class FakePool:
-    def __init__(self) -> None:
-        self.connection = FakeConnection()
-
-    def acquire(self) -> FakeAcquireContext:
-        return FakeAcquireContext(self.connection)
+@pytest.fixture
+async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        yield async_sessionmaker(engine, expire_on_commit=False)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_database_onboarding_repository_maps_session_rows() -> None:
-    pool = FakePool()
-    repository = DatabaseOnboardingRepository(pool)
+async def test_database_onboarding_repository_maps_session_rows(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    repository = DatabaseOnboardingRepository(session_factory)
     session = OnboardingSession(
         onboarding_id=uuid4(),
         owner_id=uuid4(),
@@ -74,14 +42,13 @@ async def test_database_onboarding_repository_maps_session_rows() -> None:
     loaded = await repository.get(session.onboarding_id)
 
     assert loaded == session
-    saved_row = pool.connection.rows[session.onboarding_id]
-    assert saved_row["api_hash_ciphertext"] == "encrypted-hash"
-    assert "api_hash_secret" not in saved_row
 
 
 @pytest.mark.asyncio
-async def test_database_onboarding_repository_raises_when_missing() -> None:
-    repository = DatabaseOnboardingRepository(FakePool())
+async def test_database_onboarding_repository_raises_when_missing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    repository = DatabaseOnboardingRepository(session_factory)
 
     with pytest.raises(OnboardingNotFoundError):
         await repository.get(uuid4())

@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
+from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord
+from mimic42.core.onboarding import OnboardingSession
+from mimic42.integrations.database_models import (
+    AgentEventModel,
+    AgentMessageModel,
+    AgentModel,
+    TelegramSessionModel,
+)
+
+
+class DatabaseAgentStore:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        llm_model: str = "openrouter/free",
+    ) -> None:
+        self._session_factory = session_factory
+        self._llm_model = llm_model
+
+    async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
+        if not session.name or not session.system_prompt or not session.soul_prompt:
+            raise ValueError("Onboarding session is missing agent profile fields")
+
+        async with self._session_factory() as db_session:
+            agent = await db_session.get(AgentModel, session.onboarding_id)
+            if agent is None:
+                agent = AgentModel(id=session.onboarding_id)
+                db_session.add(agent)
+
+            agent.owner_id = session.owner_id
+            agent.name = session.name
+            agent.status = AgentRuntimeState.STOPPED.value
+            agent.system_prompt = session.system_prompt
+            agent.soul_prompt = session.soul_prompt
+
+            telegram_session = await db_session.scalar(
+                select(TelegramSessionModel).where(
+                    TelegramSessionModel.agent_id == session.onboarding_id
+                )
+            )
+            if telegram_session is None:
+                telegram_session = TelegramSessionModel(agent_id=session.onboarding_id)
+                db_session.add(telegram_session)
+
+            telegram_session.session_name = session.onboarding_id.hex
+            telegram_session.phone_number = session.phone_number
+            telegram_session.api_id = session.api_id
+            telegram_session.api_hash_ciphertext = session.api_hash_secret
+            telegram_session.session_ciphertext = session.session_secret
+            telegram_session.authorization_status = "authorized"
+            telegram_session.last_authorized_at = _now()
+
+            await db_session.commit()
+            return _agent_record(agent)
+
+    async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
+        async with self._session_factory() as db_session:
+            row = await db_session.execute(
+                select(AgentModel, TelegramSessionModel)
+                .join(TelegramSessionModel, TelegramSessionModel.agent_id == AgentModel.id)
+                .where(AgentModel.id == agent_id)
+            )
+            item = row.first()
+            if item is None:
+                raise KeyError(f"Agent {agent_id} does not have a runtime config")
+            agent, telegram_session = item
+            return AgentRuntimeConfig(
+                agent_id=agent.id,
+                owner_id=agent.owner_id,
+                telegram_session_name=telegram_session.session_name,
+                telegram_api_id=telegram_session.api_id or 0,
+                telegram_api_hash=telegram_session.api_hash_ciphertext or "",
+                telegram_session_string=telegram_session.session_ciphertext,
+                llm_model=self._llm_model,
+                system_prompt=agent.system_prompt,
+                soul_prompt=agent.soul_prompt,
+            )
+
+    async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:
+        statement = select(AgentModel).order_by(AgentModel.created_at.desc())
+        if owner_id is not None:
+            statement = statement.where(AgentModel.owner_id == owner_id)
+        async with self._session_factory() as db_session:
+            return [_agent_record(agent) for agent in await db_session.scalars(statement)]
+
+    async def update_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
+        async with self._session_factory() as db_session:
+            agent = await db_session.get(AgentModel, agent_id)
+            if agent is None:
+                return
+            agent.status = state.value
+            if state is AgentRuntimeState.RUNNING:
+                agent.last_started_at = _now()
+            if state is AgentRuntimeState.STOPPED:
+                agent.last_stopped_at = _now()
+            await db_session.commit()
+
+    async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
+        async with self._session_factory() as db_session:
+            messages = await db_session.scalars(
+                select(AgentMessageModel)
+                .where(AgentMessageModel.agent_id == agent_id)
+                .order_by(AgentMessageModel.created_at.desc())
+                .limit(limit)
+            )
+            return [
+                AgentMessageRecord(
+                    agent_id=message.agent_id,
+                    peer=str(message.payload.get("peer", "")),
+                    role=message.role,
+                    content=message.content,
+                    created_at=message.created_at,
+                )
+                for message in messages
+            ]
+
+    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
+        async with self._session_factory() as db_session:
+            activities = await db_session.scalars(
+                select(AgentEventModel)
+                .where(AgentEventModel.agent_id == agent_id)
+                .order_by(AgentEventModel.created_at.desc())
+                .limit(limit)
+            )
+            return [
+                AgentActivity(
+                    agent_id=activity.agent_id,
+                    event_type=activity.event_type,
+                    status=activity.status,
+                    created_at=activity.created_at,
+                    error=activity.error,
+                )
+                for activity in activities
+            ]
+
+
+def _agent_record(agent: AgentModel) -> AgentRecord:
+    return AgentRecord(
+        agent_id=agent.id,
+        owner_id=agent.owner_id,
+        name=agent.name,
+        state=AgentRuntimeState(agent.status),
+    )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)

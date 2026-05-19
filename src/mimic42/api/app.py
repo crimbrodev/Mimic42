@@ -16,6 +16,7 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     TelegramAuthorizationRequired,
 )
+from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, AgentStore
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import AgentManager, AgentNotFoundError
 from mimic42.core.memory import RuntimeMemoryService
@@ -29,11 +30,12 @@ from mimic42.core.onboarding import (
     TelegramCredentials,
     TelegramPasswordRequiredError,
 )
+from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
-    create_database_pool,
 )
+from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
@@ -47,6 +49,8 @@ class AgentManagerLike(Protocol):
     ) -> object: ...
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus: ...
+
+    async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentStatus]: ...
 
     async def start_agent(self, agent_id: UUID) -> None: ...
 
@@ -95,53 +99,86 @@ def create_app(
     *,
     manager: AgentManagerLike | None = None,
     onboarding_service: AgentOnboardingService | None = None,
+    agent_store: AgentStore | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_manager = manager or AgentManager()
     app_onboarding_service = onboarding_service or AgentOnboardingService(
         telegram_factory=TelethonAuthClientFactory(),
+        agent_store=agent_store,
         llm_model=app_settings.llm_model,
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        database_pool = None
-        if onboarding_service is None and app_settings.database_connection_string:
-            database_pool = await create_database_pool(app_settings.database_connection_string)
+        database_engine = None
+        should_build_database = (
+            app_settings.database_connection_string
+            and (onboarding_service is None or agent_store is None)
+        )
+        if should_build_database:
+            database_engine = create_engine(app_settings.database_connection_string)
+            session_factory = create_session_factory(database_engine)
+            database_agent_store = agent_store or DatabaseAgentStore(
+                session_factory,
+                llm_model=app_settings.llm_model,
+            )
             cipher = (
                 FernetSecretCipher(app_settings.secret_key)
                 if app_settings.secret_key is not None
                 else None
             )
-            app.state.onboarding_service = AgentOnboardingService(
-                repository=DatabaseOnboardingRepository(database_pool),
-                telegram_factory=TelethonAuthClientFactory(),
-                cipher=cipher,
-                llm_model=app_settings.llm_model,
-            )
+            app.state.agent_store = database_agent_store
+            if onboarding_service is None:
+                app.state.onboarding_service = AgentOnboardingService(
+                    repository=DatabaseOnboardingRepository(session_factory),
+                    telegram_factory=TelethonAuthClientFactory(),
+                    cipher=cipher,
+                    agent_store=database_agent_store,
+                    llm_model=app_settings.llm_model,
+                )
             if manager is None:
                 long_term_memory = build_mem0_memory(app_settings.mem0_api_key)
                 app.state.agent_manager = AgentManager(
                     memory_service_factory=lambda _config: RuntimeMemoryService(
-                        short_term=DatabaseShortTermMemory(database_pool),
+                        short_term=DatabaseShortTermMemory(session_factory),
                         long_term=long_term_memory,
-                    )
+                    ),
+                    config_loader=database_agent_store.get_runtime_config,
+                    status_sink=database_agent_store.update_status,
                 )
         try:
             yield
         finally:
             await _get_agent_manager(app).shutdown()
-            if database_pool is not None:
-                await database_pool.close()
+            if database_engine is not None:
+                await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
+    app.state.agent_store = agent_store
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "mimic42-api"}
+
+    @app.get("/api/v1/agents", response_model=list[AgentRecord])
+    async def list_agents(owner_id: UUID | None = None) -> list[AgentRecord]:
+        store = _get_agent_store(app)
+        if store is not None:
+            return await store.list_agents(owner_id=owner_id)
+        statuses = await _get_agent_manager(app).list_agents(owner_id=owner_id)
+        return [
+            AgentRecord(
+                agent_id=status.agent_id,
+                owner_id=status.owner_id,
+                name="Runtime agent",
+                state=status.state,
+            )
+            for status in statuses
+        ]
 
     @app.post(
         "/api/v1/onboarding/telegram",
@@ -187,6 +224,20 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
             ) from exc
+
+    @app.get("/api/v1/agents/{agent_id}/messages", response_model=list[AgentMessageRecord])
+    async def list_agent_messages(agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
+        store = _get_agent_store(app)
+        if store is None:
+            return []
+        return await store.list_messages(agent_id=agent_id, limit=limit)
+
+    @app.get("/api/v1/agents/{agent_id}/actions", response_model=list[AgentActivity])
+    async def list_agent_actions(agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
+        store = _get_agent_store(app)
+        if store is None:
+            return []
+        return await store.list_activities(agent_id=agent_id, limit=limit)
 
     @app.post(
         "/api/v1/agents",
@@ -287,3 +338,7 @@ def _get_onboarding_service(app: FastAPI) -> AgentOnboardingService:
 
 def _get_agent_manager(app: FastAPI) -> AgentManagerLike:
     return app.state.agent_manager
+
+
+def _get_agent_store(app: FastAPI) -> AgentStore | None:
+    return app.state.agent_store

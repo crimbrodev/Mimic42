@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState, AgentStatus
+from mimic42.core.agent_store import AgentStore
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Mimic42, an async Telegram userbot agent. Act through Telegram tools, "
@@ -144,11 +145,13 @@ class AgentOnboardingService:
         repository: OnboardingRepository | None = None,
         telegram_factory: TelegramAuthClientFactory,
         cipher: SecretCipher | None = None,
+        agent_store: AgentStore | None = None,
         llm_model: str = "openrouter/free",
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository()
         self._telegram_factory = telegram_factory
         self._cipher = cipher or PlainTextCipher()
+        self._agent_store = agent_store
         self._llm_model = llm_model
 
     async def request_telegram_code(
@@ -223,6 +226,9 @@ class AgentOnboardingService:
         session.soul_prompt = profile.soul_prompt
         session.system_prompt = profile.system_prompt
         await self._repository.save(session)
+
+        if self._agent_store is not None:
+            await self._agent_store.create_from_onboarding(session)
 
         return AgentStatus(
             agent_id=session.onboarding_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol, cast
 
+from langchain_core.tools import BaseTool, StructuredTool
 from telethon import functions, types
 from telethon.tl.types import TypeInputPeer
 
@@ -34,3 +35,21 @@ class TelegramToolbox:
             )
         )
         return bool(result)
+
+
+def build_telegram_langchain_tools(client: TelethonRequestClient) -> list[BaseTool]:
+    toolbox = TelegramToolbox(client)
+
+    async def set_reaction(peer: str, message_id: int, emoji: str) -> bool:
+        """Set an emoji reaction on a Telegram message."""
+        return await toolbox.set_reaction(peer=peer, message_id=message_id, emoji=emoji)
+
+    return [
+        StructuredTool.from_function(
+            coroutine=set_reaction,
+            name="set_reaction",
+            description=(
+                "Set an emoji reaction on a Telegram message by peer, message id, and emoji."
+            ),
+        )
+    ]

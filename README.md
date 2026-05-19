@@ -5,6 +5,7 @@ Async base for a Telegram userbot agent platform:
 - FastAPI API for dashboard-to-agent interaction.
 - `MimicAgentRuntime` combines one Telethon user session and one LangChain agent.
 - `AgentManager` keeps multiple async runtimes in one event loop.
+- Database access is implemented with SQLAlchemy 2.0 async ORM models and repositories.
 - Onboarding API requests a Telegram login code, verifies it, stores a session string, and
   finalizes the agent profile.
 - Runtime listens for incoming Telegram messages and replies through the LangChain agent.
@@ -21,6 +22,12 @@ Async base for a Telegram userbot agent platform:
 3. `POST /api/v1/onboarding/{id}/agent` with `name`, `soul_prompt`, optional `system_prompt`.
 4. Dashboard controls runtime through `/api/v1/agents/{id}/start`, `/stop`, and
    `/messages/trigger`.
+
+Dashboard data endpoints:
+
+- `GET /api/v1/agents?owner_id={uuid}` lists persisted agents.
+- `GET /api/v1/agents/{id}/messages` returns recent message history.
+- `GET /api/v1/agents/{id}/actions` returns recent agent events.
 
 `api_hash`, `phone_code_hash`, and Telethon `StringSession` are backend secrets and must not be
 sent back to the browser after the request that provides them.

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from mimic42.core.memory import MemoryMessage, MemoryRole
-from mimic42.integrations.database_onboarding import DatabasePool, _acquire, _str, _uuid
+from mimic42.integrations.database_models import AgentMessageModel
 
 
 class DatabaseShortTermMemory:
-    def __init__(self, pool: DatabasePool) -> None:
-        self._pool = pool
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
 
     async def load_recent_messages(
         self,
@@ -18,36 +21,29 @@ class DatabaseShortTermMemory:
         peer: str,
         since: datetime,
     ) -> list[MemoryMessage]:
-        async with _acquire(self._pool) as connection:
-            rows = await connection.fetch(
-                """
-                select
-                    agent_id,
-                    coalesce(payload->>'peer', '') as peer,
-                    role,
-                    content,
-                    created_at
-                from public.agent_messages
-                where agent_id = $1
-                    and payload->>'peer' = $2
-                    and created_at >= $3
-                    and role in ('user', 'assistant', 'system')
-                order by created_at asc
-                """,
-                agent_id,
-                peer,
-                since,
+        async with self._session_factory() as db_session:
+            result = await db_session.scalars(
+                select(AgentMessageModel)
+                .where(
+                    AgentMessageModel.agent_id == agent_id,
+                    AgentMessageModel.payload["peer"].as_string() == peer,
+                    AgentMessageModel.created_at >= since,
+                    AgentMessageModel.role.in_(
+                        [MemoryRole.USER.value, MemoryRole.ASSISTANT.value, MemoryRole.SYSTEM.value]
+                    ),
+                )
+                .order_by(AgentMessageModel.created_at.asc())
             )
-        return [
-            MemoryMessage(
-                agent_id=_uuid(row["agent_id"]),
-                peer=_str(row["peer"]),
-                role=MemoryRole(_str(row["role"])),
-                content=_str(row["content"]),
-                created_at=_datetime(row["created_at"]),
-            )
-            for row in rows
-        ]
+            return [
+                MemoryMessage(
+                    agent_id=model.agent_id,
+                    peer=str(model.payload.get("peer", "")),
+                    role=MemoryRole(model.role),
+                    content=model.content,
+                    created_at=model.created_at,
+                )
+                for model in result
+            ]
 
     async def save_turn(
         self,
@@ -57,30 +53,23 @@ class DatabaseShortTermMemory:
         user_text: str,
         assistant_text: str,
     ) -> None:
-        async with _acquire(self._pool) as connection:
-            await connection.execute(
-                """
-                insert into public.agent_messages (
-                    agent_id,
-                    direction,
-                    role,
-                    content,
-                    payload
-                )
-                values
-                    ($1, 'incoming', 'user', $2, jsonb_build_object('peer', $3)),
-                    ($1, 'agent_response', 'assistant', $4, jsonb_build_object('peer', $3))
-                """,
-                agent_id,
-                user_text,
-                peer,
-                assistant_text,
+        async with self._session_factory() as db_session:
+            db_session.add_all(
+                [
+                    AgentMessageModel(
+                        agent_id=agent_id,
+                        direction="incoming",
+                        role=MemoryRole.USER.value,
+                        content=user_text,
+                        payload={"peer": peer},
+                    ),
+                    AgentMessageModel(
+                        agent_id=agent_id,
+                        direction="agent_response",
+                        role=MemoryRole.ASSISTANT.value,
+                        content=assistant_text,
+                        payload={"peer": peer},
+                    ),
+                ]
             )
-
-
-def _datetime(value: object) -> datetime:
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value
-    return datetime.fromisoformat(str(value))
+            await db_session.commit()

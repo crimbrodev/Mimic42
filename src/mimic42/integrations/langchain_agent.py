@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
 from pydantic import SecretStr
 
@@ -18,7 +19,11 @@ class LangChainGraphAgent:
         return await self._graph.ainvoke(input_data)
 
 
-def build_langchain_agent(config: AgentRuntimeConfig) -> LangChainAgentLike:
+def build_langchain_agent(
+    config: AgentRuntimeConfig,
+    *,
+    tools: list[BaseTool] | None = None,
+) -> LangChainAgentLike:
     model: str | ChatOpenRouter
     if config.llm_model.startswith("openrouter/"):
         settings = Settings()
@@ -34,7 +39,7 @@ def build_langchain_agent(config: AgentRuntimeConfig) -> LangChainAgentLike:
     return LangChainGraphAgent(
         create_agent(
             model=model,
-            tools=[],
+            tools=tools or [],
             system_prompt=config.combined_prompt,
         )
     )

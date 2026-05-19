@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Callable
 from typing import cast
 from uuid import UUID
 
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
+    AgentRuntimeState,
     AgentStatus,
     AgentTrigger,
     AgentTriggerResult,
@@ -15,6 +17,10 @@ from mimic42.core.agent_runtime import (
 )
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.integrations.langchain_agent import build_langchain_agent
+from mimic42.integrations.telegram_tools import (
+    TelethonRequestClient,
+    build_telegram_langchain_tools,
+)
 from mimic42.integrations.telethon_client import build_telegram_client
 
 
@@ -26,6 +32,8 @@ class AgentNotFoundError(KeyError):
 
 RuntimeFactory = Callable[[AgentRuntimeConfig], MimicAgentRuntime]
 MemoryServiceFactory = Callable[[AgentRuntimeConfig], RuntimeMemoryService]
+ConfigLoader = Callable[[UUID], object]
+StatusSink = Callable[[UUID, AgentRuntimeState], object]
 
 
 class AgentManager:
@@ -35,9 +43,13 @@ class AgentManager:
         self,
         runtime_factory: RuntimeFactory | None = None,
         memory_service_factory: MemoryServiceFactory | None = None,
+        config_loader: ConfigLoader | None = None,
+        status_sink: StatusSink | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
+        self._config_loader = config_loader
+        self._status_sink = status_sink
         self._agents: dict[UUID, MimicAgentRuntime] = {}
         self._lock = asyncio.Lock()
 
@@ -62,6 +74,11 @@ class AgentManager:
         return runtime
 
     async def get_agent(self, agent_id: UUID) -> MimicAgentRuntime:
+        if agent_id not in self._agents and self._config_loader is not None:
+            config = await _await_result(self._config_loader(agent_id))
+            if not isinstance(config, AgentRuntimeConfig):
+                raise TypeError("config_loader must return AgentRuntimeConfig")
+            await self.create_agent(config)
         try:
             return self._agents[agent_id]
         except KeyError as exc:
@@ -78,9 +95,11 @@ class AgentManager:
 
     async def start_agent(self, agent_id: UUID) -> None:
         await (await self.get_agent(agent_id)).start()
+        await self._save_status(agent_id, AgentRuntimeState.RUNNING)
 
     async def stop_agent(self, agent_id: UUID) -> None:
         await (await self.get_agent(agent_id)).stop()
+        await self._save_status(agent_id, AgentRuntimeState.STOPPED)
 
     async def trigger_message(
         self,
@@ -102,9 +121,17 @@ class AgentManager:
         return MimicAgentRuntime(
             config=config,
             telegram_client=telegram_client,
-            langchain_agent=build_langchain_agent(config),
+            langchain_agent=build_langchain_agent(
+                config,
+                tools=build_telegram_langchain_tools(cast(TelethonRequestClient, telegram_client)),
+            ),
             memory_service=memory_service,
         )
+
+    async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
+        if self._status_sink is None:
+            return
+        await _await_result(self._status_sink(agent_id, state))
 
 
 def _build_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
@@ -112,5 +139,14 @@ def _build_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
-        langchain_agent=build_langchain_agent(config),
+        langchain_agent=build_langchain_agent(
+            config,
+            tools=build_telegram_langchain_tools(cast(TelethonRequestClient, telegram_client)),
+        ),
     )
+
+
+async def _await_result(value: object) -> object:
+    if inspect.isawaitable(value):
+        return await value
+    return value
