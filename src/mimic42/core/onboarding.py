@@ -217,6 +217,9 @@ class AgentOnboardingService:
         await self._repository.save(session)
         return _public_status(session)
 
+    async def get_status(self, onboarding_id: UUID) -> OnboardingPublicStatus:
+        return _public_status(await self._repository.get(onboarding_id))
+
     async def finalize_agent(self, onboarding_id: UUID, profile: AgentProfileInput) -> AgentStatus:
         session = await self._repository.get(onboarding_id)
         if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:

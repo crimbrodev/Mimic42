@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Protocol
+from typing import Annotated, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
+from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, require_user
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
@@ -39,6 +40,8 @@ from mimic42.integrations.database_session import create_engine, create_session_
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
+CurrentUserDep = Annotated[CurrentUser, Depends(require_user)]
+
 
 class AgentManagerLike(Protocol):
     async def create_agent(
@@ -67,7 +70,6 @@ class AgentManagerLike(Protocol):
 
 class CreateAgentRequest(BaseModel):
     agent_id: UUID = Field(default_factory=uuid4)
-    owner_id: UUID
     telegram_session_name: str = Field(min_length=1)
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
@@ -75,10 +77,10 @@ class CreateAgentRequest(BaseModel):
     soul_prompt: str = Field(default="", max_length=20_000)
     auto_start: bool = False
 
-    def to_runtime_config(self) -> AgentRuntimeConfig:
+    def to_runtime_config(self, *, owner_id: UUID) -> AgentRuntimeConfig:
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
-            owner_id=self.owner_id,
+            owner_id=owner_id,
             telegram_session_name=self.telegram_session_name,
             telegram_api_id=self.telegram_api_id,
             telegram_api_hash=self.telegram_api_hash,
@@ -95,11 +97,18 @@ class TriggerMessageRequest(BaseModel):
         return AgentTrigger(peer=self.peer, text=self.text)
 
 
+class TelegramLoginRequest(BaseModel):
+    api_id: int = Field(gt=0)
+    api_hash: str = Field(min_length=1)
+    phone_number: str = Field(min_length=5)
+
+
 def create_app(
     *,
     manager: AgentManagerLike | None = None,
     onboarding_service: AgentOnboardingService | None = None,
     agent_store: AgentStore | None = None,
+    auth_verifier: AuthVerifier | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
@@ -159,17 +168,22 @@ def create_app(
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
+    app.state.auth_verifier = auth_verifier or (
+        SupabaseJWTVerifier(supabase_url=app_settings.supabase_url)
+        if app_settings.supabase_url is not None
+        else None
+    )
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "mimic42-api"}
 
     @app.get("/api/v1/agents", response_model=list[AgentRecord])
-    async def list_agents(owner_id: UUID | None = None) -> list[AgentRecord]:
+    async def list_agents(current_user: CurrentUserDep) -> list[AgentRecord]:
         store = _get_agent_store(app)
         if store is not None:
-            return await store.list_agents(owner_id=owner_id)
-        statuses = await _get_agent_manager(app).list_agents(owner_id=owner_id)
+            return await store.list_agents(owner_id=current_user.user_id)
+        statuses = await _get_agent_manager(app).list_agents(owner_id=current_user.user_id)
         return [
             AgentRecord(
                 agent_id=status.agent_id,
@@ -185,8 +199,17 @@ def create_app(
         response_model=OnboardingPublicStatus,
         status_code=status.HTTP_201_CREATED,
     )
-    async def request_telegram_code(payload: TelegramCredentials) -> OnboardingPublicStatus:
-        return await _get_onboarding_service(app).request_telegram_code(payload)
+    async def request_telegram_code(
+        payload: TelegramLoginRequest,
+        current_user: CurrentUserDep,
+    ) -> OnboardingPublicStatus:
+        credentials = TelegramCredentials(
+            owner_id=current_user.user_id,
+            api_id=payload.api_id,
+            api_hash=payload.api_hash,
+            phone_number=payload.phone_number,
+        )
+        return await _get_onboarding_service(app).request_telegram_code(credentials)
 
     @app.post(
         "/api/v1/onboarding/{onboarding_id}/telegram/code",
@@ -195,9 +218,13 @@ def create_app(
     async def verify_telegram_code(
         onboarding_id: UUID,
         payload: TelegramCodeVerification,
+        current_user: CurrentUserDep,
     ) -> OnboardingPublicStatus:
         try:
-            return await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
+            status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+            _ensure_owner(status_result.owner_id, current_user.user_id)
+            result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
+            return result
         except OnboardingNotFoundError as exc:
             raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramPasswordRequiredError as exc:
@@ -214,9 +241,13 @@ def create_app(
     async def finalize_agent(
         onboarding_id: UUID,
         payload: AgentProfileInput,
+        current_user: CurrentUserDep,
     ) -> AgentStatus:
         try:
-            return await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
+            status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+            _ensure_owner(status_result.owner_id, current_user.user_id)
+            result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
+            return result
         except OnboardingNotFoundError as exc:
             raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
@@ -226,17 +257,27 @@ def create_app(
             ) from exc
 
     @app.get("/api/v1/agents/{agent_id}/messages", response_model=list[AgentMessageRecord])
-    async def list_agent_messages(agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
+    async def list_agent_messages(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        limit: int = 50,
+    ) -> list[AgentMessageRecord]:
         store = _get_agent_store(app)
         if store is None:
             return []
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_messages(agent_id=agent_id, limit=limit)
 
     @app.get("/api/v1/agents/{agent_id}/actions", response_model=list[AgentActivity])
-    async def list_agent_actions(agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
+    async def list_agent_actions(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        limit: int = 50,
+    ) -> list[AgentActivity]:
         store = _get_agent_store(app)
         if store is None:
             return []
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_activities(agent_id=agent_id, limit=limit)
 
     @app.post(
@@ -244,11 +285,14 @@ def create_app(
         response_model=AgentStatus,
         status_code=status.HTTP_201_CREATED,
     )
-    async def create_agent(payload: CreateAgentRequest) -> AgentStatus:
+    async def create_agent(
+        payload: CreateAgentRequest,
+        current_user: CurrentUserDep,
+    ) -> AgentStatus:
         try:
             manager_for_request = _get_agent_manager(app)
             await manager_for_request.create_agent(
-                payload.to_runtime_config(),
+                payload.to_runtime_config(owner_id=current_user.user_id),
                 start=payload.auto_start,
             )
         except ValueError as exc:
@@ -264,9 +308,14 @@ def create_app(
         return await _get_agent_manager(app).get_agent_status(payload.agent_id)
 
     @app.get("/api/v1/agents/{agent_id}", response_model=AgentStatus)
-    async def get_agent(agent_id: UUID) -> AgentStatus:
+    async def get_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> AgentStatus:
         try:
-            return await _get_agent_manager(app).get_agent_status(agent_id)
+            status_result = await _get_agent_manager(app).get_agent_status(agent_id)
+            _ensure_owner(status_result.owner_id, current_user.user_id)
+            return status_result
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
 
@@ -274,8 +323,12 @@ def create_app(
         "/api/v1/agents/{agent_id}/start",
         status_code=status.HTTP_204_NO_CONTENT,
     )
-    async def start_agent(agent_id: UUID) -> Response:
+    async def start_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> Response:
         try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
             await _get_agent_manager(app).start_agent(agent_id)
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
@@ -290,8 +343,12 @@ def create_app(
         "/api/v1/agents/{agent_id}/stop",
         status_code=status.HTTP_204_NO_CONTENT,
     )
-    async def stop_agent(agent_id: UUID) -> Response:
+    async def stop_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> Response:
         try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
             await _get_agent_manager(app).stop_agent(agent_id)
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
@@ -304,8 +361,10 @@ def create_app(
     async def trigger_message(
         agent_id: UUID,
         payload: TriggerMessageRequest,
+        current_user: CurrentUserDep,
     ) -> AgentTriggerResult:
         try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
             return await _get_agent_manager(app).trigger_message(agent_id, payload.to_trigger())
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
@@ -342,3 +401,29 @@ def _get_agent_manager(app: FastAPI) -> AgentManagerLike:
 
 def _get_agent_store(app: FastAPI) -> AgentStore | None:
     return app.state.agent_store
+
+
+def _ensure_owner(owner_id: UUID, user_id: UUID) -> None:
+    if owner_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Agent does not belong to the authenticated user",
+        )
+
+
+async def _ensure_agent_owner(store: AgentStore, *, agent_id: UUID, user_id: UUID) -> None:
+    owned_agents = await store.list_agents(owner_id=user_id)
+    if not any(agent.agent_id == agent_id for agent in owned_agents):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} does not exist",
+        )
+
+
+async def _ensure_runtime_owner(app: FastAPI, *, agent_id: UUID, user_id: UUID) -> None:
+    store = _get_agent_store(app)
+    if store is not None:
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=user_id)
+        return
+    runtime_status = await _get_agent_manager(app).get_agent_status(agent_id)
+    _ensure_owner(runtime_status.owner_id, user_id)

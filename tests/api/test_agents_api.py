@@ -14,6 +14,7 @@ from mimic42.core.agent_runtime import (
     AgentTrigger,
     AgentTriggerResult,
 )
+from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
 
 @dataclass
@@ -107,8 +108,8 @@ async def test_health_endpoint() -> None:
 @pytest.mark.asyncio
 async def test_create_start_and_trigger_agent_through_api() -> None:
     manager = FakeAgentManager()
-    app = create_app(manager=manager)
     owner_id = uuid4()
+    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
     agent_id = uuid4()
 
     async with AsyncClient(
@@ -117,9 +118,9 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
     ) as client:
         create_response = await client.post(
             "/api/v1/agents",
+            headers=AUTH_HEADERS,
             json={
                 "agent_id": str(agent_id),
-                "owner_id": str(owner_id),
                 "telegram_session_name": "sessions/api-agent",
                 "telegram_api_id": 12345,
                 "telegram_api_hash": "hash",
@@ -128,9 +129,13 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
                 "auto_start": True,
             },
         )
-        start_response = await client.post(f"/api/v1/agents/{agent_id}/start")
+        start_response = await client.post(
+            f"/api/v1/agents/{agent_id}/start",
+            headers=AUTH_HEADERS,
+        )
         trigger_response = await client.post(
             f"/api/v1/agents/{agent_id}/messages/trigger",
+            headers=AUTH_HEADERS,
             json={"peer": "me", "text": "hello"},
         )
 

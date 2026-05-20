@@ -11,6 +11,7 @@ from mimic42.core.onboarding import (
     InMemoryOnboardingRepository,
     TelegramAuthClientFactory,
 )
+from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
 
 class FakeTelegramAuthClient:
@@ -68,8 +69,8 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
         repository=InMemoryOnboardingRepository(),
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAuthClient()),
     )
-    app = create_app(onboarding_service=service)
     owner_id = uuid4()
+    app = create_app(onboarding_service=service, auth_verifier=FakeAuthVerifier(owner_id))
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -77,8 +78,8 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
     ) as client:
         start_response = await client.post(
             "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
             json={
-                "owner_id": str(owner_id),
                 "api_id": 12345,
                 "api_hash": "api-hash",
                 "phone_number": "+79990000000",
@@ -88,11 +89,13 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
 
         verify_response = await client.post(
             f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
             json={"code": "12345"},
         )
 
         finalize_response = await client.post(
             f"/api/v1/onboarding/{onboarding_id}/agent",
+            headers=AUTH_HEADERS,
             json={
                 "name": "Personal Mimic",
                 "soul_prompt": "Writes short calm replies.",

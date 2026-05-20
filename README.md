@@ -17,7 +17,12 @@ Async base for a Telegram userbot agent platform:
 
 ## Agent Onboarding Flow
 
-1. `POST /api/v1/onboarding/telegram` with `owner_id`, `api_id`, `api_hash`, `phone_number`.
+Authenticated API requests must include a Supabase user access token. The backend accepts either
+`Authorization: Bearer <jwt>` or a cookie named `mimic42_access_token`, `access_token`, or
+`sb-access-token`. The token is verified locally through the project's Supabase JWKS endpoint; the
+backend does not need the Supabase secret API key for this check.
+
+1. `POST /api/v1/onboarding/telegram` with `api_id`, `api_hash`, `phone_number`.
 2. `POST /api/v1/onboarding/{id}/telegram/code` with Telegram `code` and optional `password`.
 3. `POST /api/v1/onboarding/{id}/agent` with `name`, `soul_prompt`, optional `system_prompt`.
 4. Dashboard controls runtime through `/api/v1/agents/{id}/start`, `/stop`, and
@@ -25,7 +30,7 @@ Async base for a Telegram userbot agent platform:
 
 Dashboard data endpoints:
 
-- `GET /api/v1/agents?owner_id={uuid}` lists persisted agents.
+- `GET /api/v1/agents` lists the authenticated user's persisted agents.
 - `GET /api/v1/agents/{id}/messages` returns recent message history.
 - `GET /api/v1/agents/{id}/actions` returns recent agent events.
 
@@ -46,6 +51,7 @@ The API starts at `http://127.0.0.1:8000` by default.
 
 The current `.env` names used by the backend are:
 
+- `SUPABASE_URL` for local Supabase JWT verification.
 - `DATABASE_CONNECTION_STRING` for the Supabase Postgres connection.
 - `OPENROUTER_API_KEY` for model access.
 - `MEM0_API_KEY` for long-term memory integration.
