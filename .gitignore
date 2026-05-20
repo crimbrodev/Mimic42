@@ -70,6 +70,7 @@ blob-report/
 playwright/.cache/
 
 # Local databases and state
+supabase/.temp/
 *.sqlite
 *.sqlite3
 *.db
