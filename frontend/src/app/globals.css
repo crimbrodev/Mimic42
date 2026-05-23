@@ -1,0 +1,67 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-geist-sans: 'Syne', system-ui, sans-serif;
+    --font-geist-mono: 'Space Mono', monospace;
+    --font-display: 'Syne', system-ui, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #3a3a4a #0a0a16;
+  }
+
+  *::-webkit-scrollbar { width: 6px; height: 6px; }
+  *::-webkit-scrollbar-track { background: #0a0a16; }
+  *::-webkit-scrollbar-thumb { background: #3a3a4a; border-radius: 3px; }
+  *::-webkit-scrollbar-thumb:hover { background: #606075; }
+
+  html { color-scheme: dark; }
+
+  body {
+    @apply bg-void-950 text-void-100 antialiased;
+    font-family: var(--font-geist-sans);
+    background-image:
+      linear-gradient(rgba(26, 127, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(26, 127, 255, 0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  ::selection { background: rgba(26, 127, 255, 0.3); color: white; }
+}
+
+@layer utilities {
+  .font-mono { font-family: var(--font-geist-mono), monospace; }
+  .font-display { font-family: var(--font-display), sans-serif; }
+
+  .text-gradient-plasma {
+    background: linear-gradient(135deg, #3d9bff 0%, #1a7fff 50%, #70b8ff 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-plasma { box-shadow: 0 0 20px rgba(26, 127, 255, 0.3), 0 0 60px rgba(26, 127, 255, 0.1); }
+  .glow-neon   { box-shadow: 0 0 20px rgba(0, 224, 112, 0.3); }
+
+  .border-plasma-glow { border-color: rgba(26, 127, 255, 0.4); box-shadow: 0 0 0 1px rgba(26, 127, 255, 0.1); }
+
+  .scanline::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    pointer-events: none;
+  }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(20px); }
+}

@@ -1,0 +1,86 @@
+'use client';
+
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { agentsApi } from '@/lib/api';
+import { getSupabaseClient } from '@/lib/supabase/client';
+import { queryKeys, STATUS_STALE_TIME } from '@/lib/queryClient';
+import { agentIdSchema } from '@/lib/validators';
+import type { AgentRow, AgentSettingsForm } from '@/types';
+
+/**
+ * Fetch single agent status from FastAPI backend.
+ */
+export function useAgentStatus(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.agents.detail(agentId),
+    queryFn: () => agentsApi.get(agentId),
+    enabled: isValidId,
+    staleTime: STATUS_STALE_TIME,
+    refetchInterval: (query) => {
+      // Poll more frequently when agent is transitioning states
+      const state = query.state.data?.state;
+      if (state === 'starting' || state === 'stopping') {
+        return 3_000;
+      }
+      return false; // rely on realtime for stable states
+    },
+  });
+}
+
+/**
+ * Fetch full agent row from Supabase (includes soul_prompt, system_prompt, settings).
+ */
+export function useAgentDetails(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: [...queryKeys.agents.detail(agentId), 'full'],
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('agents')
+        .select('*')
+        .eq('id', agentId)
+        .single();
+
+      if (error) throw error;
+      return data as AgentRow;
+    },
+    enabled: isValidId,
+  });
+}
+
+/**
+ * Update agent settings in Supabase.
+ * RLS ensures user can only update their own agents.
+ */
+export function useUpdateAgentSettings(agentId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (values: Partial<AgentSettingsForm>) => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('agents')
+        .update({
+          name: values.name,
+          soul_prompt: values.soul_prompt,
+          system_prompt: values.system_prompt,
+          settings: values.settings as Record<string, unknown>,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', agentId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+      qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
+    },
+  });
+}

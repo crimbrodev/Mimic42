@@ -1,0 +1,184 @@
+'use client';
+
+import { useQuery } from '@tanstack/react-query';
+import { getSupabaseClient } from '@/lib/supabase/client';
+import { queryKeys } from '@/lib/queryClient';
+import { agentIdSchema } from '@/lib/validators';
+import type { TelegramSessionRow, MessageThreadRow } from '@/types';
+
+/**
+ * Fetch Telegram session for an agent directly from Supabase.
+ */
+export function useTelegramSession(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.telegram.byAgent(agentId),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('telegram_sessions')
+        .select('*')
+        .eq('agent_id', agentId)
+        .maybeSingle();
+
+      if (error) throw error;
+      return data as TelegramSessionRow | null;
+    },
+    enabled: isValidId,
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Fetch all message threads for an agent from Supabase.
+ */
+export function useMessageThreads(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.threads.byAgent(agentId),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('message_threads')
+        .select('*')
+        .eq('agent_id', agentId)
+        .order('last_message_at', { ascending: false });
+
+      if (error) throw error;
+      return (data ?? []) as MessageThreadRow[];
+    },
+    enabled: isValidId,
+  });
+}
+
+/**
+ * Fetch dashboard KPI metrics directly from Supabase.
+ */
+export function useDashboardKPIs(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.analytics.kpis(agentId),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayISO = today.toISOString();
+
+      const yesterday24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [
+        messagesToday,
+        activeThreads,
+        errorsToday,
+        incomingWeek,
+      ] = await Promise.all([
+        // Messages today (total)
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .gte('created_at', todayISO),
+
+        // Active threads (last 24h)
+        supabase
+          .from('message_threads')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .gte('last_message_at', yesterday24h),
+
+        // Failed events today
+        supabase
+          .from('agent_events')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .eq('status', 'failed')
+          .gte('created_at', todayISO),
+
+        // Incoming messages this week
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .eq('direction', 'incoming')
+          .gte('created_at', weekAgo),
+      ]);
+
+      return {
+        messages_today: messagesToday.count ?? 0,
+        active_threads: activeThreads.count ?? 0,
+        errors_today: errorsToday.count ?? 0,
+        incoming_week: incomingWeek.count ?? 0,
+      };
+    },
+    enabled: isValidId,
+    staleTime: 60_000,
+    refetchInterval: 60_000, // refresh every minute
+  });
+}
+
+/**
+ * Fetch analytics data for charts.
+ */
+export function useAnalyticsData(agentId: string, days: 7 | 30) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.analytics.byAgent(agentId, days),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+      const [messagesResult, eventsResult] = await Promise.all([
+        supabase
+          .from('agent_messages')
+          .select('created_at, direction')
+          .eq('agent_id', agentId)
+          .gte('created_at', since)
+          .order('created_at', { ascending: true }),
+
+        supabase
+          .from('agent_events')
+          .select('created_at, status')
+          .eq('agent_id', agentId)
+          .gte('created_at', since)
+          .order('created_at', { ascending: true }),
+      ]);
+
+      // Group by day
+      const dayMap = new Map<string, { messages: number; events: number; errors: number }>();
+
+      // Initialize all days
+      for (let i = 0; i < days; i++) {
+        const d = new Date(Date.now() - (days - 1 - i) * 24 * 60 * 60 * 1000);
+        const key = d.toISOString().slice(0, 10);
+        dayMap.set(key, { messages: 0, events: 0, errors: 0 });
+      }
+
+      (messagesResult.data ?? []).forEach((m) => {
+        const key = m.created_at.slice(0, 10);
+        const day = dayMap.get(key);
+        if (day) day.messages++;
+      });
+
+      (eventsResult.data ?? []).forEach((e) => {
+        const key = e.created_at.slice(0, 10);
+        const day = dayMap.get(key);
+        if (day) {
+          day.events++;
+          if (e.status === 'failed') day.errors++;
+        }
+      });
+
+      return Array.from(dayMap.entries()).map(([date, counts]) => ({
+        date,
+        ...counts,
+      }));
+    },
+    enabled: isValidId,
+    staleTime: 5 * 60 * 1000,
+  });
+}
