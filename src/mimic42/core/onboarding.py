@@ -45,9 +45,9 @@ class AgentProfileInput(BaseModel):
 class OnboardingSession(BaseModel):
     onboarding_id: UUID
     owner_id: UUID
-    api_id: int
-    api_hash_secret: str
-    phone_number: str
+    api_id: int | None = None
+    api_hash_secret: str | None = None
+    phone_number: str | None = None
     authorization_status: TelegramLoginStatus
     phone_code_hash_secret: str | None = None
     session_secret: str | None = None
@@ -60,7 +60,7 @@ class OnboardingPublicStatus(BaseModel):
     onboarding_id: UUID
     owner_id: UUID
     authorization_status: TelegramLoginStatus
-    phone_number: str
+    phone_number: str | None = None
 
 
 class SecretCipher(Protocol):
@@ -190,6 +190,8 @@ class AgentOnboardingService:
         verification: TelegramCodeVerification,
     ) -> OnboardingPublicStatus:
         session = await self._repository.get(onboarding_id)
+        if session.api_id is None or session.api_hash_secret is None or session.phone_number is None:
+            raise TelegramAuthorizationIncompleteError(onboarding_id)
         client = self._telegram_factory.build(
             api_id=session.api_id,
             api_hash=self._cipher.decrypt(session.api_hash_secret),
@@ -241,7 +243,12 @@ class AgentOnboardingService:
 
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)
-        if not session.system_prompt or not session.soul_prompt:
+        if (
+            not session.system_prompt
+            or not session.soul_prompt
+            or session.api_id is None
+            or session.api_hash_secret is None
+        ):
             raise TelegramAuthorizationIncompleteError(onboarding_id)
 
         return AgentRuntimeConfig(

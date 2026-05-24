@@ -92,9 +92,9 @@ class AgentOnboardingSessionModel(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
-    api_id: Mapped[int] = mapped_column(Integer)
-    api_hash_ciphertext: Mapped[str] = mapped_column(Text)
-    phone_number: Mapped[str] = mapped_column(Text)
+    api_id: Mapped[int | None] = mapped_column(Integer)
+    api_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
+    phone_number: Mapped[str | None] = mapped_column(Text)
     phone_code_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
     session_ciphertext: Mapped[str | None] = mapped_column(Text)
     authorization_status: Mapped[str] = mapped_column(

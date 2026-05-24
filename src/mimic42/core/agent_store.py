@@ -68,8 +68,14 @@ class InMemoryAgentStore:
         self._activities = activities or []
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
-        if not session.name or not session.system_prompt or not session.soul_prompt:
-            raise ValueError("Onboarding session is missing agent profile fields")
+        if (
+            not session.name
+            or not session.system_prompt
+            or not session.soul_prompt
+            or session.api_id is None
+            or session.api_hash_secret is None
+        ):
+            raise ValueError("Onboarding session is missing agent profile fields or Telegram credentials")
         record = AgentRecord(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,

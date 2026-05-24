@@ -69,10 +69,10 @@ create table public.agents (
 
 create table public.agent_onboarding_sessions (
     id uuid primary key default gen_random_uuid(),
-    owner_id uuid not null references public.profiles(id) on delete cascade,
-    api_id integer not null,
-    api_hash_ciphertext text not null,
-    phone_number text not null,
+    owner_id uuid not null unique references public.profiles(id) on delete cascade,
+    api_id integer,
+    api_hash_ciphertext text,
+    phone_number text,
     phone_code_hash_ciphertext text,
     session_ciphertext text,
     authorization_status public.telegram_authorization_status not null default 'not_started',
@@ -83,7 +83,7 @@ create table public.agent_onboarding_sessions (
     last_error text,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    constraint agent_onboarding_sessions_phone_not_blank check (btrim(phone_number) <> '')
+    constraint agent_onboarding_sessions_phone_not_blank check (phone_number is null or btrim(phone_number) <> '')
 );
 
 create table public.telegram_sessions (
@@ -351,3 +351,24 @@ with check (
 
 alter publication supabase_realtime add table public.agent_events;
 alter publication supabase_realtime add table public.agent_messages;
+
+-- Automatically create a profile when a user signs up
+create or replace function public.handle_new_user()
+returns trigger
+security definer set search_path = public
+language plpgsql
+as $$
+begin
+    insert into public.profiles (id, email, display_name)
+    values (
+        new.id,
+        new.email,
+        coalesce(new.raw_user_meta_data->>'display_name', new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1))
+    );
+    return new;
+end;
+$$;
+
+create or replace trigger on_auth_user_created
+    after insert on auth.users
+    for each row execute function public.handle_new_user();
