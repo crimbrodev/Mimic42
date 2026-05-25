@@ -14,10 +14,18 @@ export const agentIdSchema = z
 // ── Phone number in E.164 format ──────────────────────────────────────────────
 export const phoneNumberSchema = z
   .string()
-  .min(7, 'Номер телефона слишком короткий')
-  .max(20, 'Номер телефона слишком длинный')
-  .regex(
-    /^\+[1-9]\d{6,18}$/,
+  .min(1, 'Номер телефона обязателен')
+  .transform((val) => {
+    // Удаляем все пробелы, дефисы и скобки
+    const cleaned = val.replace(/[\s\-\(\)]/g, '');
+    // Если строка не пустая и не начинается с '+', добавляем '+'
+    if (cleaned && !cleaned.startsWith('+')) {
+      return '+' + cleaned;
+    }
+    return cleaned;
+  })
+  .refine(
+    (val) => /^\+[1-9]\d{6,18}$/.test(val),
     'Номер телефона должен быть в формате E.164 (например: +79991234567)'
   );
 

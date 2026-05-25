@@ -6,6 +6,7 @@ import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys, STATUS_STALE_TIME } from '@/lib/queryClient';
 import { agentIdSchema } from '@/lib/validators';
 import type { AgentRow, AgentSettingsForm } from '@/types';
+import type { Json } from '@/types/supabase';
 
 /**
  * Fetch single agent status from FastAPI backend.
@@ -68,7 +69,7 @@ export function useUpdateAgentSettings(agentId: string) {
           name: values.name,
           soul_prompt: values.soul_prompt,
           system_prompt: values.system_prompt,
-          settings: values.settings as Record<string, unknown>,
+          settings: values.settings as Json,
           updated_at: new Date().toISOString(),
         })
         .eq('id', agentId)

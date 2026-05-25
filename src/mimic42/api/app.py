@@ -6,6 +6,7 @@ from typing import Annotated, Protocol
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, require_user
@@ -73,18 +74,18 @@ class CreateAgentRequest(BaseModel):
     telegram_session_name: str = Field(min_length=1)
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
-    system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     auto_start: bool = False
 
     def to_runtime_config(self, *, owner_id: UUID) -> AgentRuntimeConfig:
+        from mimic42.core.onboarding import load_default_system_prompt
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
             owner_id=owner_id,
             telegram_session_name=self.telegram_session_name,
             telegram_api_id=self.telegram_api_id,
             telegram_api_hash=self.telegram_api_hash,
-            system_prompt=self.system_prompt,
+            system_prompt=load_default_system_prompt(),
             soul_prompt=self.soul_prompt,
         )
 
@@ -165,6 +166,13 @@ def create_app(
                 await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
@@ -209,7 +217,36 @@ def create_app(
             api_hash=payload.api_hash,
             phone_number=payload.phone_number,
         )
-        return await _get_onboarding_service(app).request_telegram_code(credentials)
+        try:
+            return await _get_onboarding_service(app).request_telegram_code(credentials)
+        except Exception as exc:
+            from telethon.errors import ApiIdInvalidError, PhoneNumberInvalidError, FloodWaitError, RPCError
+            if isinstance(exc, ApiIdInvalidError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Неверная комбинация API ID и API Hash. Пожалуйста, проверьте их на my.telegram.org."
+                ) from exc
+            if isinstance(exc, PhoneNumberInvalidError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Неверный формат номера телефона. Используйте международный формат (например, +79991234567)."
+                ) from exc
+            if isinstance(exc, FloodWaitError):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек."
+                ) from exc
+            if isinstance(exc, RPCError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Ошибка Telegram: {exc.message}"
+                ) from exc
+            if isinstance(exc, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc)
+                ) from exc
+            raise exc
 
     @app.post(
         "/api/v1/onboarding/{onboarding_id}/telegram/code",
@@ -232,6 +269,35 @@ def create_app(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                 detail="Telegram account requires a 2FA password.",
             ) from exc
+        except Exception as exc:
+            from telethon.errors import (
+                PhoneCodeEmptyError,
+                PhoneCodeExpiredError,
+                PhoneCodeInvalidError,
+                PasswordHashInvalidError,
+                RPCError
+            )
+            if isinstance(exc, (PhoneCodeInvalidError, PhoneCodeEmptyError)):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Неверный код подтверждения. Пожалуйста, проверьте и введите код заново."
+                ) from exc
+            if isinstance(exc, PhoneCodeExpiredError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Срок действия кода подтверждения истек. Запросите новый код."
+                ) from exc
+            if isinstance(exc, PasswordHashInvalidError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Неверный пароль двухфакторной аутентификации (2FA)."
+                ) from exc
+            if isinstance(exc, RPCError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Ошибка Telegram: {exc.message}"
+                ) from exc
+            raise exc
 
     @app.post(
         "/api/v1/onboarding/{onboarding_id}/agent",

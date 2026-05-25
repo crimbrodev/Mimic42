@@ -10,6 +10,7 @@ import type {
   OnboardingStep,
   OnboardingPublicStatus,
 } from '@/types';
+import { DEFAULT_SYSTEM_PROMPT } from '@/lib/constants';
 import type {
   AgentNameValues,
   SoulPromptValues,
@@ -22,10 +23,9 @@ import type {
 /**
  * Determines the current onboarding step from the session row.
  */
-export function deriveOnboardingStep(session: OnboardingSessionRow | null): OnboardingStep {
+export function deriveOnboardingStep(session: OnboardingSessionRow | null | undefined): OnboardingStep {
   if (!session || !session.agent_name) return 'name';
   if (!session.soul_prompt) return 'soul';
-  if (!session.system_prompt) return 'system_prompt';
 
   const authStatus = session.authorization_status;
   if (authStatus === 'not_started') return 'telegram_credentials';
@@ -119,7 +119,9 @@ export function useSaveSoulPrompt() {
   return {
     ...save,
     mutateAsync: (values: SoulPromptValues) =>
-      save.mutateAsync({ soul_prompt: values.soul_prompt }),
+      save.mutateAsync({
+        soul_prompt: values.soul_prompt,
+      }),
   };
 }
 
@@ -140,7 +142,6 @@ export function useSaveSystemPrompt() {
  */
 export function useStartTelegramAuth() {
   const qc = useQueryClient();
-  const save = useSaveOnboardingStep();
 
   return useMutation({
     mutationFn: async (values: TelegramCredentialsValues) => {
@@ -148,12 +149,6 @@ export function useStartTelegramAuth() {
         api_id: values.api_id,
         api_hash: values.api_hash,
         phone_number: values.phone_number,
-      });
-
-      // Save phone number and status to local session
-      await save.mutateAsync({
-        phone_number: values.phone_number,
-        authorization_status: result.authorization_status,
       });
 
       return result as OnboardingPublicStatus;
@@ -169,7 +164,6 @@ export function useStartTelegramAuth() {
  */
 export function useSubmitTelegramCode() {
   const qc = useQueryClient();
-  const save = useSaveOnboardingStep();
 
   return useMutation({
     mutationFn: async ({
@@ -186,13 +180,12 @@ export function useSubmitTelegramCode() {
         password,
       });
 
-      await save.mutateAsync({
-        authorization_status: result.authorization_status,
-      });
-
       return result;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result.authorization_status === 'authorized' && typeof window !== 'undefined') {
+        sessionStorage.removeItem('_m42_tc_state');
+      }
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
     },
   });

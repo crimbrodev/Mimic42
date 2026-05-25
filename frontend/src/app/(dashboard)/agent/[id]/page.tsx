@@ -32,7 +32,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar,
 } from 'recharts';
-import type { AgentTab, AgentActivity, AgentMessageRecord, ApiError } from '@/types';
+import type { AgentTab, AgentActivity, AgentMessageRecord, ApiError, FeedItem } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
@@ -241,16 +241,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         hint="Описание личности, стиля общения и особенностей агента"
       />
 
-      <Textarea
-        label="System Prompt"
-        value={values.system_prompt}
-        onChange={(e) => set('system_prompt', e.target.value)}
-        error={formErrors.system_prompt}
-        className="min-h-[180px]"
-        showCount
-        maxLength={20000}
-        hint="Базовые инструкции для языковой модели"
-      />
+
 
       <div className="flex items-center gap-3 pt-2">
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>
@@ -393,7 +384,7 @@ function TabLogs({ agentId }: { agentId: string }) {
   );
 }
 
-function LogRow({ item }: { item: ReturnType<typeof [].map>[number] & { type: string } }) {
+function LogRow({ item }: { item: FeedItem }) {
   const time = format(new Date((item as { timestamp: string }).timestamp), 'HH:mm:ss');
 
   if ((item as { type: string }).type === 'message') {

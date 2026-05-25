@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
+from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -10,10 +11,24 @@ from pydantic import BaseModel, Field
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState, AgentStatus
 from mimic42.core.agent_store import AgentStore
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Mimic42, an async Telegram userbot agent. Act through Telegram tools, "
-    "respect the configured character, and keep actions auditable."
-)
+
+def load_default_system_prompt() -> str:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "BASE_SYSTEM_PROMPT.txt"
+    if path.exists():
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return (
+        "Ты — умный ИИ-агент, который общается в Telegram от имени пользователя. "
+        "Твоя задача — поддерживать живой, естественный диалог, как это делает человек. "
+        "Отвечай кратко и по делу. Используй неформальный, дружелюбный тон. "
+        "Не раскрывай, что ты ИИ, если тебя прямо не спросят. "
+        "Помни контекст разговора и учитывай предыдущие сообщения."
+    )
+
+DEFAULT_SYSTEM_PROMPT = load_default_system_prompt()
 
 
 class TelegramLoginStatus(StrEnum):
@@ -39,28 +54,26 @@ class TelegramCodeVerification(BaseModel):
 class AgentProfileInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     soul_prompt: str = Field(min_length=1, max_length=20_000)
-    system_prompt: str = Field(default=DEFAULT_SYSTEM_PROMPT, min_length=1, max_length=20_000)
 
 
 class OnboardingSession(BaseModel):
     onboarding_id: UUID
     owner_id: UUID
-    api_id: int
-    api_hash_secret: str
-    phone_number: str
+    api_id: int | None = None
+    api_hash_secret: str | None = None
+    phone_number: str | None = None
     authorization_status: TelegramLoginStatus
     phone_code_hash_secret: str | None = None
     session_secret: str | None = None
     name: str | None = None
     soul_prompt: str | None = None
-    system_prompt: str | None = None
 
 
 class OnboardingPublicStatus(BaseModel):
     onboarding_id: UUID
     owner_id: UUID
     authorization_status: TelegramLoginStatus
-    phone_number: str
+    phone_number: str | None = None
 
 
 class SecretCipher(Protocol):
@@ -84,6 +97,8 @@ class OnboardingRepository(Protocol):
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession: ...
 
+    async def get_by_owner(self, owner_id: UUID) -> OnboardingSession | None: ...
+
 
 class InMemoryOnboardingRepository:
     def __init__(self) -> None:
@@ -97,6 +112,12 @@ class InMemoryOnboardingRepository:
             return self._sessions[onboarding_id].model_copy(deep=True)
         except KeyError as exc:
             raise OnboardingNotFoundError(onboarding_id) from exc
+
+    async def get_by_owner(self, owner_id: UUID) -> OnboardingSession | None:
+        for session in self._sessions.values():
+            if session.owner_id == owner_id:
+                return session.model_copy(deep=True)
+        return None
 
 
 class OnboardingNotFoundError(KeyError):
@@ -158,7 +179,16 @@ class AgentOnboardingService:
         self,
         credentials: TelegramCredentials,
     ) -> OnboardingPublicStatus:
-        onboarding_id = uuid4()
+        existing = await self._repository.get_by_owner(credentials.owner_id)
+        if existing is not None:
+            onboarding_id = existing.onboarding_id
+            name = existing.name
+            soul_prompt = existing.soul_prompt
+        else:
+            onboarding_id = uuid4()
+            name = None
+            soul_prompt = None
+
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
@@ -180,6 +210,8 @@ class AgentOnboardingService:
             authorization_status=TelegramLoginStatus.CODE_REQUESTED,
             phone_code_hash_secret=self._cipher.encrypt(phone_code_hash),
             session_secret=self._cipher.encrypt(session_string),
+            name=name,
+            soul_prompt=soul_prompt,
         )
         await self._repository.save(session)
         return _public_status(session)
@@ -190,6 +222,12 @@ class AgentOnboardingService:
         verification: TelegramCodeVerification,
     ) -> OnboardingPublicStatus:
         session = await self._repository.get(onboarding_id)
+        if (
+            session.api_id is None
+            or session.api_hash_secret is None
+            or session.phone_number is None
+        ):
+            raise TelegramAuthorizationIncompleteError(onboarding_id)
         client = self._telegram_factory.build(
             api_id=session.api_id,
             api_hash=self._cipher.decrypt(session.api_hash_secret),
@@ -198,14 +236,19 @@ class AgentOnboardingService:
         await client.connect()
         try:
             try:
-                await client.sign_in(
-                    phone=session.phone_number,
-                    code=verification.code,
-                    phone_code_hash=_decrypt_optional(self._cipher, session.phone_code_hash_secret),
-                    password=verification.password,
-                )
+                if verification.password:
+                    await client.sign_in(
+                        password=verification.password,
+                    )
+                else:
+                    await client.sign_in(
+                        phone=session.phone_number,
+                        code=verification.code,
+                        phone_code_hash=_decrypt_optional(self._cipher, session.phone_code_hash_secret),
+                    )
             except TelegramPasswordRequiredError:
                 session.authorization_status = TelegramLoginStatus.PASSWORD_REQUIRED
+                session.session_secret = self._cipher.encrypt(client.save_session())
                 await self._repository.save(session)
                 return _public_status(session)
 
@@ -227,7 +270,6 @@ class AgentOnboardingService:
 
         session.name = profile.name
         session.soul_prompt = profile.soul_prompt
-        session.system_prompt = profile.system_prompt
         await self._repository.save(session)
 
         if self._agent_store is not None:
@@ -241,7 +283,11 @@ class AgentOnboardingService:
 
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)
-        if not session.system_prompt or not session.soul_prompt:
+        if (
+            not session.soul_prompt
+            or session.api_id is None
+            or session.api_hash_secret is None
+        ):
             raise TelegramAuthorizationIncompleteError(onboarding_id)
 
         return AgentRuntimeConfig(
@@ -252,7 +298,7 @@ class AgentOnboardingService:
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),
             llm_model=self._llm_model,
-            system_prompt=session.system_prompt,
+            system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
         )
 

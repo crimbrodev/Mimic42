@@ -52,7 +52,7 @@ async def test_finalize_agent_persists_agent_and_telegram_session() -> None:
 
     status = await service.finalize_agent(
         onboarding_id,
-        AgentProfileInput(name="Mimic", soul_prompt="Short replies", system_prompt="System"),
+        AgentProfileInput(name="Mimic", soul_prompt="Short replies"),
     )
 
     assert status.agent_id == onboarding_id
@@ -61,5 +61,6 @@ async def test_finalize_agent_persists_agent_and_telegram_session() -> None:
     assert persisted.owner_id == owner_id
     assert persisted.telegram_api_hash == "encrypted-hash"
     assert persisted.telegram_session_string == "encrypted-session"
-    assert persisted.system_prompt == "System"
+    from mimic42.core.onboarding import load_default_system_prompt
+    assert persisted.system_prompt == load_default_system_prompt()
     assert persisted.soul_prompt == "Short replies"

@@ -99,7 +99,6 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
             json={
                 "name": "Personal Mimic",
                 "soul_prompt": "Writes short calm replies.",
-                "system_prompt": "You operate a Telegram user account.",
             },
         )
 

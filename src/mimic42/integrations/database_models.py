@@ -74,7 +74,6 @@ class AgentModel(Base):
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(AgentRuntimeStatus, default="draft")
-    system_prompt: Mapped[str] = mapped_column(Text)
     soul_prompt: Mapped[str] = mapped_column(Text, default="")
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -92,9 +91,9 @@ class AgentOnboardingSessionModel(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
-    api_id: Mapped[int] = mapped_column(Integer)
-    api_hash_ciphertext: Mapped[str] = mapped_column(Text)
-    phone_number: Mapped[str] = mapped_column(Text)
+    api_id: Mapped[int | None] = mapped_column(Integer)
+    api_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
+    phone_number: Mapped[str | None] = mapped_column(Text)
     phone_code_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
     session_ciphertext: Mapped[str | None] = mapped_column(Text)
     authorization_status: Mapped[str] = mapped_column(
@@ -102,7 +101,6 @@ class AgentOnboardingSessionModel(Base):
         default="not_started",
     )
     agent_name: Mapped[str | None] = mapped_column(Text)
-    system_prompt: Mapped[str | None] = mapped_column(Text)
     soul_prompt: Mapped[str | None] = mapped_column(Text)
     completed_agent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("agents.id", ondelete="SET NULL"),

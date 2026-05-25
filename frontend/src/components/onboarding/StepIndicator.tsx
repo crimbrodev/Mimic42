@@ -4,9 +4,8 @@ import type { OnboardingStep } from '@/types';
 const STEPS: { id: OnboardingStep; label: string; short: string }[] = [
   { id: 'name',                label: 'Имя агента',       short: '01' },
   { id: 'soul',                label: 'Характер',          short: '02' },
-  { id: 'system_prompt',       label: 'Промпт',            short: '03' },
-  { id: 'telegram_credentials',label: 'Telegram',          short: '04' },
-  { id: 'finalize',            label: 'Финализация',       short: '05' },
+  { id: 'telegram_credentials',label: 'Telegram',          short: '03' },
+  { id: 'finalize',            label: 'Финализация',       short: '04' },
 ];
 
 // Steps that count as "telegram" phase
