@@ -100,7 +100,6 @@ async def test_create_agent_uses_authenticated_user_not_payload_owner_id() -> No
                 "telegram_session_name": "sessions/api-agent",
                 "telegram_api_id": 12345,
                 "telegram_api_hash": "hash",
-                "system_prompt": "Base prompt",
             },
         )
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   useOnboardingSession,
@@ -11,6 +11,7 @@ import {
   useStartTelegramAuth,
   useSubmitTelegramCode,
   useFinalizeAgent,
+  useSaveOnboardingStep,
 } from '@/hooks/useOnboarding';
 import { StepIndicator } from '@/components/onboarding/StepIndicator';
 import { Button } from '@/components/ui/button';
@@ -26,14 +27,34 @@ import { Zap, ExternalLink, CheckCircle } from 'lucide-react';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
 
-const DEFAULT_SYSTEM_PROMPT = `Ты — умный ИИ-агент, который общается в Telegram от имени пользователя.
-Твоя задача — поддерживать живой, естественный диалог, как это делает человек.
-Отвечай кратко и по делу. Используй неформальный, дружелюбный тон.
-Не раскрывай, что ты ИИ, если тебя прямо не спросят.
-Помни контекст разговора и учитывай предыдущие сообщения.`;
+import { DEFAULT_SYSTEM_PROMPT } from '@/lib/constants';
 
 export default function OnboardingPage() {
   const { data: session, isLoading } = useOnboardingSession();
+  const [telegramCode, setTelegramCodeState] = useState('');
+
+  // Secure client-side synchronization and preventive purging
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = sessionStorage.getItem('_m42_tc_state');
+      const status = session?.authorization_status;
+
+      // Immediately purge if authorized, not started, or finished to prevent lingering codes
+      if (status === 'authorized' || status === 'not_started' || session?.completed_agent_id) {
+        sessionStorage.removeItem('_m42_tc_state');
+        setTelegramCodeState('');
+      } else if (saved) {
+        setTelegramCodeState(saved);
+      }
+    }
+  }, [session]);
+
+  const setTelegramCode = (code: string) => {
+    setTelegramCodeState(code);
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('_m42_tc_state', code);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -68,21 +89,36 @@ export default function OnboardingPage() {
 
         {/* Step content */}
         <div className="animate-slide-in-up">
-          <StepRouter step={currentStep} session={session} />
+          <StepRouter
+            step={currentStep}
+            session={session ?? null}
+            telegramCode={telegramCode}
+            setTelegramCode={setTelegramCode}
+          />
         </div>
       </div>
     </div>
   );
 }
 
-function StepRouter({ step, session }: { step: OnboardingStep; session: OnboardingSessionRow | null }) {
+function StepRouter({
+  step,
+  session,
+  telegramCode,
+  setTelegramCode,
+}: {
+  step: OnboardingStep;
+  session: OnboardingSessionRow | null;
+  telegramCode: string;
+  setTelegramCode: (val: string) => void;
+}) {
   switch (step) {
     case 'name':             return <StepName />;
     case 'soul':             return <StepSoul session={session} />;
     case 'system_prompt':    return <StepSystemPrompt session={session} />;
     case 'telegram_credentials': return <StepTelegramCredentials session={session} />;
-    case 'telegram_code':    return <StepTelegramCode session={session} />;
-    case 'telegram_2fa':     return <StepTelegram2FA session={session} />;
+    case 'telegram_code':    return <StepTelegramCode session={session} setTelegramCode={setTelegramCode} />;
+    case 'telegram_2fa':     return <StepTelegram2FA session={session} telegramCode={telegramCode} />;
     case 'finalize':         return <StepFinalize session={session} />;
     default:                 return null;
   }
@@ -126,7 +162,7 @@ function StepName() {
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <StepHeading
-        step="01 / 05"
+        step="01 / 04"
         title="Как зовут вашего агента?"
         description="Придумайте имя для агента — оно будет отображаться в панели управления."
       />
@@ -176,7 +212,7 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <StepHeading
-        step="02 / 05"
+        step="02 / 04"
         title="Характер агента"
         description="Опишите личность, стиль общения и особенности вашего агента. Чем подробнее — тем естественнее поведение."
       />
@@ -278,7 +314,7 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <StepHeading
-        step="04 / 05"
+        step="03 / 04"
         title="Подключение Telegram"
         description="Авторизуйтесь как пользователь (не бот). Для этого нужен API ID и Hash от Telegram."
       />
@@ -334,11 +370,33 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
 }
 
 // ── Step 4b: Code ─────────────────────────────────────────────────────────────
-function StepTelegramCode({ session }: { session: OnboardingSessionRow | null }) {
+function StepTelegramCode({
+  session,
+  setTelegramCode,
+}: {
+  session: OnboardingSessionRow | null;
+  setTelegramCode: (val: string) => void;
+}) {
   const { toast } = useToast();
   const submitCode = useSubmitTelegramCode();
+  const save = useSaveOnboardingStep();
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [isBacking, setIsBacking] = useState(false);
+
+  const handleBack = async () => {
+    setIsBacking(true);
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('_m42_tc_state');
+      }
+      await save.mutateAsync({ authorization_status: 'not_started' });
+    } catch {
+      toast('Не удалось вернуться назад', 'error');
+    } finally {
+      setIsBacking(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -350,6 +408,7 @@ function StepTelegramCode({ session }: { session: OnboardingSessionRow | null })
     setError('');
     if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
     try {
+      setTelegramCode(code);
       await submitCode.mutateAsync({ onboardingId: session.id, code });
     } catch (e: unknown) {
       const err = e as ApiError;
@@ -365,7 +424,7 @@ function StepTelegramCode({ session }: { session: OnboardingSessionRow | null })
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <StepHeading
-        step="04 / 05"
+        step="03 / 04"
         title="Код из Telegram"
         description={`Telegram отправил код на номер ${session?.phone_number ?? ''}. Введите его ниже.`}
       />
@@ -381,19 +440,59 @@ function StepTelegramCode({ session }: { session: OnboardingSessionRow | null })
         autoFocus
         className="text-center text-xl tracking-[0.5em]"
       />
-      <Button type="submit" isLoading={submitCode.isPending} size="lg">
-        Подтвердить →
-      </Button>
+      <div className="flex gap-4">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleBack}
+          isLoading={isBacking}
+          disabled={submitCode.isPending}
+          size="lg"
+        >
+          ← Назад
+        </Button>
+        <Button
+          type="submit"
+          isLoading={submitCode.isPending}
+          disabled={isBacking}
+          size="lg"
+          className="flex-1"
+        >
+          Подтвердить →
+        </Button>
+      </div>
     </form>
   );
 }
 
 // ── Step 4c: 2FA ──────────────────────────────────────────────────────────────
-function StepTelegram2FA({ session }: { session: OnboardingSessionRow | null }) {
+function StepTelegram2FA({
+  session,
+  telegramCode,
+}: {
+  session: OnboardingSessionRow | null;
+  telegramCode: string;
+}) {
   const { toast } = useToast();
   const submitCode = useSubmitTelegramCode();
+  const save = useSaveOnboardingStep();
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isBacking, setIsBacking] = useState(false);
+
+  const handleBack = async () => {
+    setIsBacking(true);
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.removeItem('_m42_tc_state');
+      }
+      await save.mutateAsync({ authorization_status: 'not_started' });
+    } catch {
+      toast('Не удалось вернуться назад', 'error');
+    } finally {
+      setIsBacking(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -404,10 +503,8 @@ function StepTelegram2FA({ session }: { session: OnboardingSessionRow | null }) 
     }
     setError('');
     if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
-    // We need the original code — in real scenario it would be re-requested
-    // For now pass empty code with password
     try {
-      await submitCode.mutateAsync({ onboardingId: session.id, code: '', password });
+      await submitCode.mutateAsync({ onboardingId: session.id, code: telegramCode, password });
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Неверный пароль 2FA', 'error');
       setError('Неверный пароль');
@@ -417,7 +514,7 @@ function StepTelegram2FA({ session }: { session: OnboardingSessionRow | null }) 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <StepHeading
-        step="04 / 05"
+        step="03 / 04"
         title="Двухфакторная аутентификация"
         description="На вашем аккаунте включена 2FA. Введите пароль облачного хранилища Telegram."
       />
@@ -435,9 +532,27 @@ function StepTelegram2FA({ session }: { session: OnboardingSessionRow | null }) 
         error={error}
         autoFocus
       />
-      <Button type="submit" isLoading={submitCode.isPending} size="lg">
-        Подтвердить →
-      </Button>
+      <div className="flex gap-4">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleBack}
+          isLoading={isBacking}
+          disabled={submitCode.isPending}
+          size="lg"
+        >
+          ← Назад
+        </Button>
+        <Button
+          type="submit"
+          isLoading={submitCode.isPending}
+          disabled={isBacking}
+          size="lg"
+          className="flex-1"
+        >
+          Подтвердить →
+        </Button>
+      </div>
     </form>
   );
 }
@@ -459,7 +574,7 @@ function StepFinalize({ session }: { session: OnboardingSessionRow | null }) {
   return (
     <div className="space-y-6">
       <StepHeading
-        step="05 / 05"
+        step="04 / 04"
         title="Всё готово!"
         description="Проверьте данные агента и запустите его."
       />

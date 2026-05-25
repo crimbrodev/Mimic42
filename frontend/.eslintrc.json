@@ -1,7 +1,7 @@
 {
   "extends": [
     "next/core-web-vitals",
-    "plugin:security/recommended"
+    "plugin:security/recommended-legacy"
   ],
   "rules": {
     "react/no-danger": "error",

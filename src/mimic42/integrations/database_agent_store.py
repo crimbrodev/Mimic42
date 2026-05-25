@@ -28,7 +28,7 @@ class DatabaseAgentStore:
         self._llm_model = llm_model
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
-        if not session.name or not session.system_prompt or not session.soul_prompt:
+        if not session.name or not session.soul_prompt:
             raise ValueError("Onboarding session is missing agent profile fields")
 
         async with self._session_factory() as db_session:
@@ -40,7 +40,6 @@ class DatabaseAgentStore:
             agent.owner_id = session.owner_id
             agent.name = session.name
             agent.status = AgentRuntimeState.STOPPED.value
-            agent.system_prompt = session.system_prompt
             agent.soul_prompt = session.soul_prompt
 
             telegram_session = await db_session.scalar(
@@ -74,6 +73,7 @@ class DatabaseAgentStore:
             if item is None:
                 raise KeyError(f"Agent {agent_id} does not have a runtime config")
             agent, telegram_session = item
+            from mimic42.core.onboarding import load_default_system_prompt
             return AgentRuntimeConfig(
                 agent_id=agent.id,
                 owner_id=agent.owner_id,
@@ -82,7 +82,7 @@ class DatabaseAgentStore:
                 telegram_api_hash=telegram_session.api_hash_ciphertext or "",
                 telegram_session_string=telegram_session.session_ciphertext,
                 llm_model=self._llm_model,
-                system_prompt=agent.system_prompt,
+                system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
             )
 

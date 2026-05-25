@@ -77,21 +77,21 @@ export interface OnboardingTelegramInput {
 /**
  * Telegram authorization status
  */
-export type TelegramAuthorizationStatus =
+export type OnboardingAuthorizationStatus =
   | 'not_started'
   | 'code_requested'
   | 'password_required'
   | 'authorized'
   | 'error';
 
-/**
+export type TelegramAuthorizationStatus = OnboardingAuthorizationStatus | 'revoked';/**
  * POST /api/v1/onboarding/telegram — response
  */
 export interface OnboardingPublicStatus {
   onboarding_id: string;
   owner_id: string;
   phone_number: string;
-  authorization_status: TelegramAuthorizationStatus;
+  authorization_status: OnboardingAuthorizationStatus;
 }
 
 /**
@@ -224,7 +224,7 @@ export interface OnboardingSessionRow {
   agent_name: string | null;
   soul_prompt: string | null;
   system_prompt: string | null;
-  authorization_status: TelegramAuthorizationStatus;
+  authorization_status: OnboardingAuthorizationStatus;
   phone_number: string | null;
   completed_agent_id: string | null;
   created_at: string;

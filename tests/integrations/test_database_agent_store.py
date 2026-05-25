@@ -44,7 +44,6 @@ async def test_database_agent_store_creates_agent_session_and_runtime_config(
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             session_secret="encrypted-session",
             name="Mimic",
-            system_prompt="System",
             soul_prompt="Soul",
         )
     )

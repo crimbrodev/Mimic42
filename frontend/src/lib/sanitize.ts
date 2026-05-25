@@ -10,6 +10,7 @@
  * - agents.name              (user-defined)
  * - message_threads.peer_name (from Telegram)
  */
+import type { DOMPurify } from 'dompurify';
 
 /**
  * Strips ALL HTML — returns plain text only.
@@ -74,7 +75,7 @@ type PurifyConfig = {
   FORBID_TAGS?: string[];
 };
 
-let DOMPurifyInstance: typeof import('dompurify') | null = null;
+let DOMPurifyInstance: DOMPurify | null = null;
 
 async function loadDOMPurify() {
   if (!DOMPurifyInstance) {
