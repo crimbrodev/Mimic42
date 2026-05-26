@@ -65,7 +65,9 @@ async def test_get_memories_endpoint() -> None:
             headers=AUTH_HEADERS,
         )
         assert response.status_code == 200
-        assert response.json() == [{"id": "mem-1", "memory": "test memory", "user_id": str(agent_id)}]
+        assert response.json() == [
+            {"id": "mem-1", "memory": "test memory", "user_id": str(agent_id)}
+        ]
         assert memory_store.get_all_called == [agent_id]
 
         # Test with query
@@ -74,7 +76,9 @@ async def test_get_memories_endpoint() -> None:
             headers=AUTH_HEADERS,
         )
         assert response_search.status_code == 200
-        assert response_search.json() == [{"id": "mem-1", "memory": "searched coffee", "user_id": str(agent_id)}]
+        assert response_search.json() == [
+            {"id": "mem-1", "memory": "searched coffee", "user_id": str(agent_id)}
+        ]
         assert memory_store.search_called == [(agent_id, "coffee")]
 
 

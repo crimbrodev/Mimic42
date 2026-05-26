@@ -100,6 +100,7 @@ class MimicAgentRuntime:
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
         self._message_handler_registered = False
+        self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -195,6 +196,72 @@ class MimicAgentRuntime:
         if not text:
             return
 
+        # Format sender name and member tag in groups/channels
+        is_group = getattr(event, "is_group", False)
+        is_channel = getattr(event, "is_channel", False)
+        if is_group or is_channel:
+            sender = await getattr(event, "get_sender", lambda: None)()
+            sender_name = ""
+            if sender:
+                first_name = getattr(sender, "first_name", None)
+                last_name = getattr(sender, "last_name", None)
+                if first_name:
+                    sender_name = first_name
+                    if last_name:
+                        sender_name += f" {last_name}"
+                else:
+                    sender_name = (
+                        getattr(sender, "title", None)
+                        or getattr(sender, "username", None)
+                        or str(getattr(sender, "id", ""))
+                    )
+            
+            if not sender_name:
+                sender_name = "Unknown"
+
+            # Fetch member tag/title
+            title = None
+            if getattr(event, "sender_id", None) and getattr(event, "chat_id", None):
+                chat_id = event.chat_id
+                sender_id = event.sender_id
+                cache_key = (chat_id, sender_id)
+                import time
+                now_ts = time.time()
+                
+                # Check cache
+                if cache_key in self._member_tag_cache:
+                    cached_title, expiry = self._member_tag_cache[cache_key]
+                    if now_ts < expiry:
+                        title = cached_title
+                
+                is_expired = (
+                    cache_key not in self._member_tag_cache
+                    or now_ts >= self._member_tag_cache[cache_key][1]
+                )
+                if is_expired:
+                    try:
+                        from telethon.tl import functions
+                        # Only supergroups/channels support GetParticipantRequest
+                        is_supergroup = getattr(event, "is_channel", False)
+                        if is_supergroup:
+                            res = await event.client(functions.channels.GetParticipantRequest(
+                                channel=chat_id,
+                                participant=sender_id
+                            ))
+                            title = (
+                                res.participant.title
+                                if hasattr(res.participant, "title")
+                                else None
+                            )
+                    except Exception:
+                        title = None
+                    self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+
+            if title:
+                text = f"{sender_name} [{title}]: {text}"
+            else:
+                text = f"{sender_name}: {text}"
+
         peer = await _extract_incoming_peer(event)
         await self.trigger_message(
             AgentTrigger(
@@ -260,10 +327,48 @@ def _extract_message_id(message: object) -> str | None:
 
 
 def _extract_incoming_text(event: object) -> str:
-    value = getattr(event, "raw_text", None) or getattr(event, "text", None)
-    if isinstance(value, str):
-        return value
-    return ""
+    text = getattr(event, "raw_text", None) or getattr(event, "text", None)
+    if not isinstance(text, str):
+        text = ""
+        
+    message = getattr(event, "message", None)
+    if message and getattr(message, "media", None):
+        try:
+            from mimic42.integrations.telegram_tools import format_media_object
+            media_id = format_media_object(message)
+            if media_id:
+                if media_id.startswith("photo:"):
+                    text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
+                elif media_id.startswith("sticker:"):
+                    parts = media_id.split(":")
+                    emoji = parts[5] if len(parts) > 5 else ""
+                    pack_name = parts[6] if len(parts) > 6 else ""
+                    pack_str = f" пак={pack_name}" if pack_name else ""
+                    text = (
+                        f"[Стикер {emoji} id={media_id}{pack_str}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("voice:"):
+                    text = (
+                        f"[Голосовое сообщение id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("round:"):
+                    text = (
+                        f"[Видеосообщение id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("doc:"):
+                    parts = media_id.split(":")
+                    filename = parts[5] if len(parts) > 5 else "file"
+                    text = (
+                        f"[Файл name={filename} id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+        except Exception:
+            pass
+            
+    return text
 
 
 async def _extract_incoming_peer(event: object) -> str:

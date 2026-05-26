@@ -244,7 +244,9 @@ class AgentOnboardingService:
                     await client.sign_in(
                         phone=session.phone_number,
                         code=verification.code,
-                        phone_code_hash=_decrypt_optional(self._cipher, session.phone_code_hash_secret),
+                        phone_code_hash=_decrypt_optional(
+                            self._cipher, session.phone_code_hash_secret
+                        ),
                     )
             except TelegramPasswordRequiredError:
                 session.authorization_status = TelegramLoginStatus.PASSWORD_REQUIRED

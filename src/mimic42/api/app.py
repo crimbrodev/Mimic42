@@ -38,7 +38,7 @@ from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
-from mimic42.integrations.mem0_memory import build_mem0_memory, Mem0LongTermMemory
+from mimic42.integrations.mem0_memory import Mem0LongTermMemory, build_mem0_memory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
 CurrentUserDep = Annotated[CurrentUser, Depends(require_user)]
@@ -222,16 +222,27 @@ def create_app(
         try:
             return await _get_onboarding_service(app).request_telegram_code(credentials)
         except Exception as exc:
-            from telethon.errors import ApiIdInvalidError, PhoneNumberInvalidError, FloodWaitError, RPCError
+            from telethon.errors import (
+                ApiIdInvalidError,
+                FloodWaitError,
+                PhoneNumberInvalidError,
+                RPCError,
+            )
             if isinstance(exc, ApiIdInvalidError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Неверная комбинация API ID и API Hash. Пожалуйста, проверьте их на my.telegram.org."
+                    detail=(
+                        "Неверная комбинация API ID и API Hash. "
+                        "Пожалуйста, проверьте их на my.telegram.org."
+                    )
                 ) from exc
             if isinstance(exc, PhoneNumberInvalidError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Неверный формат номера телефона. Используйте международный формат (например, +79991234567)."
+                    detail=(
+                        "Неверный формат номера телефона. "
+                        "Используйте международный формат (например, +79991234567)."
+                    )
                 ) from exc
             if isinstance(exc, FloodWaitError):
                 raise HTTPException(
@@ -273,11 +284,11 @@ def create_app(
             ) from exc
         except Exception as exc:
             from telethon.errors import (
+                PasswordHashInvalidError,
                 PhoneCodeEmptyError,
                 PhoneCodeExpiredError,
                 PhoneCodeInvalidError,
-                PasswordHashInvalidError,
-                RPCError
+                RPCError,
             )
             if isinstance(exc, (PhoneCodeInvalidError, PhoneCodeEmptyError)):
                 raise HTTPException(
@@ -472,7 +483,10 @@ def create_app(
                 detail=f"Ошибка Mem0 API: {exc}",
             ) from exc
 
-    @app.get("/api/v1/agents/{agent_id}/memory/{memory_id}/history", response_model=list[dict[str, Any]])
+    @app.get(
+        "/api/v1/agents/{agent_id}/memory/{memory_id}/history",
+        response_model=list[dict[str, Any]],
+    )
     async def get_agent_memory_history(
         agent_id: UUID,
         memory_id: str,
