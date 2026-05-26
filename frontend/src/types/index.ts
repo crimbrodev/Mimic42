@@ -360,3 +360,24 @@ export interface RealtimePayload<T> {
   schema: string;
   table: string;
 }
+
+export interface AgentMemory {
+  id: string;
+  memory: string;
+  user_id: string;
+  hash?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MemoryHistoryItem {
+  id: string;
+  memory_id: string;
+  prev_value: string | null;
+  new_value: string | null;
+  event_type: string;
+  created_at: string;
+  updated_at?: string | null;
+  user_id?: string | null;
+}
+

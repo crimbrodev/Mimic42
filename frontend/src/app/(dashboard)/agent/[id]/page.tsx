@@ -9,6 +9,7 @@ import { useAgentActions as useAgentActionsQuery } from '@/hooks/useAgentMessage
 import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage } from '@/hooks/useAgents';
+import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Button } from '@/components/ui/button';
@@ -23,7 +24,7 @@ import {
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, Wifi, WifiOff, AlertTriangle, RefreshCw,
-  Bot, Clock, CheckCircle, XCircle, Loader2,
+  Bot, Clock, CheckCircle, XCircle, Loader2, Search,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -118,7 +119,7 @@ export default function AgentPage() {
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}
-        {activeTab === 'memory'    && <TabMemory />}
+        {activeTab === 'memory'    && <TabMemory agentId={agentId} />}
       </div>
     </div>
   );
@@ -716,23 +717,223 @@ function TabAnalytics({ agentId }: { agentId: string }) {
   );
 }
 
-// ── Tab: Memory (stub) ────────────────────────────────────────────────────────
-function TabMemory() {
+// ── Tab: Memory (Interactive Read-Only View) ──────────────────────────────────
+interface TabMemoryProps {
+  agentId: string;
+}
+
+function TabMemory({ agentId }: TabMemoryProps) {
+  const [searchVal, setSearchVal] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [selectedMemoryId, setSelectedMemoryId] = useState<string | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(searchVal), 300);
+    return () => clearTimeout(timer);
+  }, [searchVal]);
+
+  const { data: memories, isLoading, error } = useAgentMemories(agentId, debouncedQuery);
+
+  const { data: history, isLoading: isHistoryLoading } = useAgentMemoryHistory(
+    agentId,
+    selectedMemoryId || '',
+    historyModalOpen
+  );
+
+  const handleShowHistory = (memoryId: string) => {
+    setSelectedMemoryId(memoryId);
+    setHistoryModalOpen(true);
+  };
+
+  const getCleanErrorMessage = (err: unknown): string => {
+    if (err && typeof err === 'object' && 'message' in err) {
+      return (err as { message: string }).message;
+    }
+    return 'Не удалось загрузить воспоминания.';
+  };
+
   return (
-    <div className="max-w-xl">
-      <Card variant="glass" padding="lg" className="text-center space-y-4">
-        <Brain className="h-12 w-12 text-void-700 mx-auto" />
-        <h3 className="font-display text-lg font-bold text-void-400">
-          Memory API недоступен
-        </h3>
-        <p className="font-mono text-sm text-void-600 leading-relaxed">
-          Для подключения Mem0 памяти необходим эндпоинт{' '}
-          <code className="text-plasma-500 bg-plasma-950/40 px-1 py-0.5 rounded-[2px]">
-            /api/v1/agents/{'{id}'}/memory
-          </code>{' '}
-          на бэкенде. После добавления эндпоинта — подключить здесь.
-        </p>
-      </Card>
+    <div className="space-y-6">
+      {/* Header and Search */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="font-display text-lg font-bold text-void-100 flex items-center gap-2">
+            <Brain className="h-5 w-5 text-plasma-400 animate-pulse" />
+            Долгосрочная память
+          </h2>
+          <p className="font-mono text-xs text-void-500 mt-1">
+            Список фактов и предпочтений, автоматически выделенных агентом из диалогов.
+          </p>
+        </div>
+
+        <div className="relative max-w-sm w-full">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-void-600" />
+          <Input
+            type="text"
+            placeholder="Поиск воспоминаний..."
+            value={searchVal}
+            onChange={(e) => setSearchVal(e.target.value)}
+            className="pl-9 bg-void-950/40 border-void-800 text-void-200 placeholder-void-600 focus:border-plasma-500"
+          />
+        </div>
+      </div>
+
+      <Divider className="border-void-900" />
+
+      {/* Content Area */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card variant="glass" padding="md" className="space-y-3">
+            <Skeleton className="h-4 w-2/3" />
+            <Skeleton className="h-4 w-5/6" />
+            <Skeleton className="h-3 w-1/4 mt-4" />
+          </Card>
+          <Card variant="glass" padding="md" className="space-y-3">
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-4 w-4/5" />
+            <Skeleton className="h-3 w-1/3 mt-4" />
+          </Card>
+        </div>
+      ) : error ? (
+        <Card variant="bordered" padding="lg" className="border-rose-950/40 bg-rose-950/10 text-center space-y-4">
+          <AlertTriangle className="h-10 w-10 text-rose-500 mx-auto" />
+          <h3 className="font-display text-base font-bold text-rose-400">
+            Ошибка при загрузке памяти
+          </h3>
+          <p className="font-mono text-sm text-rose-600 max-w-md mx-auto">
+            {getCleanErrorMessage(error)}
+          </p>
+        </Card>
+      ) : !memories || memories.length === 0 ? (
+        <Card variant="glass" padding="lg" className="text-center py-12 space-y-4 max-w-md mx-auto border-void-900">
+          <Brain className="h-10 w-10 text-void-700 mx-auto" />
+          <h3 className="font-display text-base font-bold text-void-400">
+            {searchVal ? 'Ничего не найдено' : 'Память пуста'}
+          </h3>
+          <p className="font-mono text-xs text-void-600">
+            {searchVal 
+              ? 'Попробуйте изменить поисковый запрос.' 
+              : 'Агент начнет автоматически формировать память после первых сообщений с пользователями.'}
+          </p>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {memories.map((mem) => (
+            <Card
+              variant="glass"
+              padding="md"
+              key={mem.id}
+              className="relative group border-void-800/80 hover:border-plasma-500/30 transition-colors flex flex-col justify-between"
+            >
+              <div>
+                <p className="text-void-100 text-sm leading-relaxed whitespace-pre-wrap">
+                  {sanitizeText(mem.memory)}
+                </p>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between border-t border-void-900/60 pt-3">
+                <span className="font-mono text-[10px] text-void-600 flex items-center gap-1.5">
+                  <Clock className="h-3 w-3" />
+                  {mem.created_at 
+                    ? format(new Date(mem.created_at), 'dd.MM.yyyy HH:mm', { locale: ru }) 
+                    : 'Неизвестно'}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => handleShowHistory(mem.id)}
+                  leftIcon={<RefreshCw className="h-3 w-3" />}
+                  className="text-void-400 hover:text-plasma-400 hover:bg-void-900/30 transition-all font-mono text-[10px]"
+                >
+                  История
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* History Timeline Modal */}
+      <Modal
+        isOpen={historyModalOpen}
+        onClose={() => {
+          setHistoryModalOpen(false);
+          setSelectedMemoryId(null);
+        }}
+        title="История изменения воспоминания"
+        size="md"
+      >
+        {isHistoryLoading ? (
+          <div className="flex flex-col items-center justify-center py-12 space-y-4">
+            <Spinner size="lg" className="text-plasma-500" />
+            <span className="font-mono text-xs text-void-500">Загрузка истории изменений...</span>
+          </div>
+        ) : !history || history.length === 0 ? (
+          <div className="text-center py-8 space-y-2">
+            <Clock className="h-8 w-8 text-void-700 mx-auto" />
+            <h4 className="font-display text-sm font-bold text-void-400">История отсутствует</h4>
+            <p className="font-mono text-xs text-void-600">Для данного факта не найдено изменений.</p>
+          </div>
+        ) : (
+          <div className="space-y-6 py-2 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
+            {history.map((item, index) => (
+              <div key={item.id || index} className="flex gap-4 relative">
+                {index < history.length - 1 && (
+                  <div className="absolute left-[9px] top-6 bottom-0 w-0.5 bg-void-800" />
+                )}
+                
+                <div className={cn(
+                  "h-5 w-5 rounded-full border flex items-center justify-center shrink-0 mt-0.5 text-[8px] font-bold font-mono",
+                  item.event_type === 'add' ? "bg-emerald-950/80 border-emerald-500 text-emerald-400" :
+                  item.event_type === 'delete' ? "bg-rose-950/80 border-rose-500 text-rose-400" :
+                  "bg-blue-950/80 border-blue-500 text-blue-400"
+                )}>
+                  {item.event_type === 'add' ? 'A' :
+                   item.event_type === 'delete' ? 'D' : 'U'}
+                </div>
+
+                <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="flex items-center gap-3">
+                    <span className={cn(
+                      "font-mono text-[10px] font-bold uppercase tracking-wider",
+                      item.event_type === 'add' ? "text-emerald-400" :
+                      item.event_type === 'delete' ? "text-rose-400" : "text-blue-400"
+                    )}>
+                      {item.event_type === 'add' ? 'Создано' :
+                       item.event_type === 'delete' ? 'Удалено' : 'Обновлено'}
+                    </span>
+                    <span className="font-mono text-[10px] text-void-500">
+                      {format(new Date(item.created_at), 'dd MMMM yyyy, HH:mm', { locale: ru })}
+                    </span>
+                  </div>
+
+                  <p className="text-void-200 text-sm leading-relaxed bg-void-950/30 p-2.5 rounded-[4px] border border-void-900/60 break-words">
+                    {sanitizeText(item.new_value || item.prev_value || '')}
+                  </p>
+
+                  {item.prev_value && item.new_value && item.prev_value !== item.new_value && (
+                    <div className="text-xs border-l-2 border-void-800 pl-3 py-1 space-y-1 bg-void-950/20 rounded-r-sm">
+                      <span className="text-void-500 font-mono block text-[10px]">Предыдущее значение:</span>
+                      <span className="text-void-400 line-through block text-xs">{sanitizeText(item.prev_value)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        
+        <div className="flex justify-end mt-6 border-t border-void-800/80 pt-4">
+          <Button type="button" variant="ghost" size="sm" onClick={() => {
+            setHistoryModalOpen(false);
+            setSelectedMemoryId(null);
+          }}>
+            Закрыть
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

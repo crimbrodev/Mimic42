@@ -58,6 +58,16 @@ export const queryKeys = {
     all: ['profile'] as const,
     current: () => [...queryKeys.profile.all, 'current'] as const,
   },
+
+  // Memories
+  memories: {
+    all: ['memories'] as const,
+    byAgent: (agentId: string) => [...queryKeys.memories.all, agentId] as const,
+    byAgentSearch: (agentId: string, query?: string) =>
+      [...queryKeys.memories.byAgent(agentId), { query }] as const,
+    history: (agentId: string, memoryId: string) =>
+      [...queryKeys.memories.byAgent(agentId), 'history', memoryId] as const,
+  },
 } as const;
 
 // ── Create the global QueryClient ─────────────────────────────────────────────
