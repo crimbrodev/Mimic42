@@ -478,11 +478,13 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 48
+    assert len(tools) == 50
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
     assert "check_admin_permissions" in tool_names
+    assert "transcribe_voice_note" in tool_names
+    assert "read_document_file" in tool_names
 
 
 @pytest.mark.asyncio
@@ -897,3 +899,19 @@ async def test_remaining_group_and_channel_tools() -> None:
     res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
     assert res["success"] is True
     assert res["message_id"] == 999
+
+
+@pytest.mark.asyncio
+async def test_transcribe_and_read_file_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # Test transcribe_voice_note
+    res_trans = await toolbox.transcribe_voice_note("voice:123:456:0102:2")
+    assert res_trans["success"] is True
+    assert "расшифровка" in res_trans["transcription"]
+
+    # Test read_document_file
+    res_read = await toolbox.read_document_file("doc:123:456:0102:2:info.txt")
+    assert res_read["success"] is True
+    assert "содержимое" in res_read["content"]

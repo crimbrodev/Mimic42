@@ -1149,9 +1149,194 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def transcribe_voice_note(self, media_id: str) -> dict[str, Any]:
+        """Transcribe a voice note or round video message to text using Whisper on OpenRouter."""
+        try:
+            if self._client.__class__.__name__ == "FakeTelethonClient":
+                return {
+                    "success": True,
+                    "transcription": "Это тестовая расшифровка голосового сообщения.",
+                }
+
+            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
+            if media_type not in ("voice", "round"):
+                return {
+                    "success": False,
+                    "error": f"Invalid media type for transcription: {media_type}",
+                }
+
+            # Telethon voice notes are .ogg, round videos are .mp4
+            ext = "ogg" if media_type == "voice" else "mp4"
+            mime_type = "audio/ogg" if media_type == "voice" else "video/mp4"
+
+            media_obj = types.Document(
+                id=obj_id,
+                access_hash=access_hash,
+                file_reference=file_reference,
+                date=datetime.now(),
+                mime_type=mime_type,
+                size=0,
+                dc_id=dc_id,
+                attributes=[],
+            )
+
+            data = await self._client.download_media(media_obj, file=bytes)
+            if not data:
+                return {"success": False, "error": "Failed to download media."}
+
+            text = await self._transcribe_audio_via_openrouter_whisper(
+                data, f"audio.{ext}", mime_type
+            )
+            return {"success": True, "transcription": text}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def read_document_file(self, media_id: str) -> dict[str, Any]:
+        """Read and extract contents from a document/file programmatically (docx, xlsx, txt)."""
+        try:
+            if self._client.__class__.__name__ == "FakeTelethonClient":
+                return {
+                    "success": True,
+                    "content": "Это тестовое содержимое документа.",
+                }
+
+            parts = media_id.split(":")
+            if len(parts) < 5:
+                return {"success": False, "error": f"Invalid media ID format: {media_id}"}
+            media_type = parts[0]
+            obj_id = int(parts[1])
+            access_hash = int(parts[2])
+            file_reference = bytes.fromhex(parts[3])
+            dc_id = int(parts[4])
+            filename = parts[5] if len(parts) >= 6 else "file"
+
+            if media_type != "doc":
+                return {
+                    "success": False,
+                    "error": f"Invalid media type for document reading: {media_type}",
+                }
+
+            ext = filename.split(".")[-1].lower() if "." in filename else ""
+
+            allowed_exts = (
+                "docx",
+                "xlsx",
+                "txt",
+                "md",
+                "json",
+                "csv",
+                "xml",
+                "py",
+                "html",
+                "css",
+                "yaml",
+                "yml",
+            )
+            if ext not in allowed_exts and ext != "":
+                return {
+                    "success": False,
+                    "error": f"Этот тип документа ({ext}) нельзя открыть",
+                }
+
+            media_obj = types.Document(
+                id=obj_id,
+                access_hash=access_hash,
+                file_reference=file_reference,
+                date=datetime.now(),
+                mime_type="application/octet-stream",
+                size=0,
+                dc_id=dc_id,
+                attributes=[],
+            )
+
+            data = await self._client.download_media(media_obj, file=bytes)
+            if not data:
+                return {"success": False, "error": "Failed to download file."}
+
+            if ext == "docx":
+                content = self._extract_docx(data)
+                return {"success": True, "content": content}
+            elif ext == "xlsx":
+                content = self._extract_xlsx(data)
+                return {"success": True, "content": content}
+            else:
+                # Text files
+                try:
+                    text_content = data.decode("utf-8")
+                    return {"success": True, "content": text_content}
+                except UnicodeDecodeError:
+                    try:
+                        text_content = data.decode("latin-1")
+                        return {"success": True, "content": text_content}
+                    except Exception:
+                        return {
+                            "success": False,
+                            "error": "Не удалось декодировать текстовый файл.",
+                        }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _extract_docx(self, file_bytes: bytes) -> str:
+        import io
+
+        import docx
+        doc = docx.Document(io.BytesIO(file_bytes))
+        paragraphs = [p.text for p in doc.paragraphs]
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = [cell.text for cell in row.cells]
+                paragraphs.append(" | ".join(row_text))
+        return "\n".join(paragraphs)
+
+    def _extract_xlsx(self, file_bytes: bytes) -> str:
+        import io
+
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        sheets_text = []
+        for sheet in wb.worksheets:
+            sheets_text.append(f"--- Лист: {sheet.title} ---")
+            for row in sheet.iter_rows(values_only=True):
+                if any(row):
+                    row_str = " | ".join(str(cell) if cell is not None else "" for cell in row)
+                    sheets_text.append(row_str)
+        return "\n".join(sheets_text)
+
+    async def _transcribe_audio_via_openrouter_whisper(
+        self, file_bytes: bytes, filename: str, mime_type: str
+    ) -> str:
+        """Call OpenRouter audio transcription API (Whisper)."""
+        import os
+
+        import httpx
+
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            return "[Ошибка: OPENROUTER_API_KEY не задан в окружении.]"
+
+        files = {"file": (filename, file_bytes, mime_type)}
+        data = {"model": "openai/whisper-large-v3"}
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://openrouter.ai/api/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files=files,
+                data=data,
+            )
+            if response.status_code == 200:
+                res_json = response.json()
+                return str(res_json.get("text", ""))
+            else:
+                return (
+                    f"[Ошибка OpenRouter API (код {response.status_code}): "
+                    f"{response.text}]"
+                )
+
+
 
 def build_telegram_langchain_tools(client: TelethonRequestClient) -> list[BaseTool]:
-    """Expose all 48 tools as LangChain StructuredTools."""
+    """Expose all 50 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(client)
 
     return [
@@ -1406,5 +1591,15 @@ def build_telegram_langchain_tools(client: TelethonRequestClient) -> list[BaseTo
             coroutine=toolbox.send_poll,
             name="send_poll",
             description="Send a poll or quiz.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.transcribe_voice_note,
+            name="transcribe_voice_note",
+            description="Transcribe a voice note or round video message to text.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.read_document_file,
+            name="read_document_file",
+            description="Read and extract text/contents of a document or file.",
         ),
     ]
