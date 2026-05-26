@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Protocol
+from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
@@ -38,7 +38,7 @@ from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
-from mimic42.integrations.mem0_memory import build_mem0_memory
+from mimic42.integrations.mem0_memory import build_mem0_memory, Mem0LongTermMemory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
 CurrentUserDep = Annotated[CurrentUser, Depends(require_user)]
@@ -150,6 +150,7 @@ def create_app(
                 )
             if manager is None:
                 long_term_memory = build_mem0_memory(app_settings.mem0_api_key)
+                app.state.long_term_memory = long_term_memory
                 app.state.agent_manager = AgentManager(
                     memory_service_factory=lambda _config: RuntimeMemoryService(
                         short_term=DatabaseShortTermMemory(session_factory),
@@ -176,6 +177,7 @@ def create_app(
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
+    app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
         SupabaseJWTVerifier(supabase_url=app_settings.supabase_url)
         if app_settings.supabase_url is not None
@@ -440,6 +442,63 @@ def create_app(
                 detail=str(exc),
             ) from exc
 
+    @app.get("/api/v1/agents/{agent_id}/memory", response_model=list[dict[str, Any]])
+    async def list_agent_memories(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        query: str | None = None,
+    ) -> list[dict[str, Any]]:
+        store = _get_agent_store(app)
+        if store is not None:
+            await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        else:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+        
+        memory_store = _get_long_term_memory(app)
+        if memory_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Долгосрочная память Mem0 не настроена на сервере.",
+            )
+        
+        try:
+            if query:
+                return await memory_store.search_memories(agent_id, query)
+            else:
+                return await memory_store.get_all_memories(agent_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка Mem0 API: {exc}",
+            ) from exc
+
+    @app.get("/api/v1/agents/{agent_id}/memory/{memory_id}/history", response_model=list[dict[str, Any]])
+    async def get_agent_memory_history(
+        agent_id: UUID,
+        memory_id: str,
+        current_user: CurrentUserDep,
+    ) -> list[dict[str, Any]]:
+        store = _get_agent_store(app)
+        if store is not None:
+            await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        else:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+        
+        memory_store = _get_long_term_memory(app)
+        if memory_store is None:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Долгосрочная память Mem0 не настроена на сервере.",
+            )
+        
+        try:
+            return await memory_store.get_memory_history(memory_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Ошибка Mem0 API при получении истории: {exc}",
+            ) from exc
+
     return app
 
 
@@ -467,6 +526,10 @@ def _get_agent_manager(app: FastAPI) -> AgentManagerLike:
 
 def _get_agent_store(app: FastAPI) -> AgentStore | None:
     return app.state.agent_store
+
+
+def _get_long_term_memory(app: FastAPI) -> Mem0LongTermMemory | None:
+    return getattr(app.state, "long_term_memory", None)
 
 
 def _ensure_owner(owner_id: UUID, user_id: UUID) -> None:

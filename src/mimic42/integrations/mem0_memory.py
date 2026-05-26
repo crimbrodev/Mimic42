@@ -4,13 +4,19 @@ from collections.abc import Mapping
 from typing import Any, Protocol, cast
 from uuid import UUID
 
-from mem0 import MemoryClient
+from mem0 import AsyncMemoryClient
 
 
 class Mem0ClientLike(Protocol):
-    def search(self, query: str, **kwargs: object) -> dict[str, object]: ...
+    async def search(self, query: str, **kwargs: object) -> dict[str, Any]: ...
 
-    def add(self, messages: object, **kwargs: object) -> dict[str, object]: ...
+    async def add(self, messages: object, **kwargs: object) -> dict[str, Any]: ...
+
+    async def get_all(self, **kwargs: object) -> dict[str, Any]: ...
+
+    async def delete(self, memory_id: str) -> dict[str, Any]: ...
+
+    async def history(self, memory_id: str) -> list[dict[str, Any]]: ...
 
 
 class Mem0LongTermMemory:
@@ -18,7 +24,7 @@ class Mem0LongTermMemory:
         self._client = client
 
     async def search(self, *, agent_id: UUID, query: str) -> list[str]:
-        result = self._client.search(query, user_id=str(agent_id), output_format="v1.1")
+        result = await self._client.search(query, filters={"user_id": str(agent_id)})
         memories = _extract_results(result)
         return [memory for memory in memories if memory]
 
@@ -29,20 +35,37 @@ class Mem0LongTermMemory:
         user_text: str,
         assistant_text: str,
     ) -> None:
-        self._client.add(
+        await self._client.add(
             [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": assistant_text},
             ],
             user_id=str(agent_id),
-            output_format="v1.1",
         )
+
+    async def get_all_memories(self, agent_id: UUID) -> list[dict[str, Any]]:
+        result = await self._client.get_all(filters={"user_id": str(agent_id)})
+        if isinstance(result, dict):
+            return result.get("results", [])
+        return []
+
+    async def search_memories(self, agent_id: UUID, query: str) -> list[dict[str, Any]]:
+        result = await self._client.search(query, filters={"user_id": str(agent_id)})
+        if isinstance(result, dict):
+            return result.get("results", [])
+        return []
+
+    async def get_memory_history(self, memory_id: str) -> list[dict[str, Any]]:
+        result = await self._client.history(memory_id)
+        if isinstance(result, list):
+            return result
+        return []
 
 
 def build_mem0_memory(api_key: str | None) -> Mem0LongTermMemory | None:
     if not api_key:
         return None
-    return Mem0LongTermMemory(MemoryClient(api_key=api_key))
+    return Mem0LongTermMemory(AsyncMemoryClient(api_key=api_key))
 
 
 def _extract_results(result: object) -> list[str]:

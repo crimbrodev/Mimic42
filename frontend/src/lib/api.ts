@@ -118,6 +118,8 @@ import type {
   FinalizeAgentInput,
   TriggerMessageInput,
   TriggerMessageResponse,
+  AgentMemory,
+  MemoryHistoryItem,
 } from '@/types';
 
 export const agentsApi = {
@@ -173,5 +175,19 @@ export const onboardingApi = {
   finalizeAgent: (onboardingId: string, body: FinalizeAgentInput) =>
     apiClient
       .post<AgentStatus>(`/onboarding/${onboardingId}/agent`, body)
+      .then((r) => r.data),
+};
+
+export const agentMemoryApi = {
+  /** GET /api/v1/agents/:id/memory */
+  list: (agentId: string, query?: string) =>
+    apiClient
+      .get<AgentMemory[]>(`/agents/${agentId}/memory`, { params: query ? { query } : {} })
+      .then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/memory/:memoryId/history */
+  getHistory: (agentId: string, memoryId: string) =>
+    apiClient
+      .get<MemoryHistoryItem[]>(`/agents/${agentId}/memory/${memoryId}/history`)
       .then((r) => r.data),
 };
