@@ -7,7 +7,6 @@ import {
   deriveOnboardingStep,
   useSaveAgentName,
   useSaveSoulPrompt,
-  useSaveSystemPrompt,
   useStartTelegramAuth,
   useSubmitTelegramCode,
   useFinalizeAgent,
@@ -19,7 +18,7 @@ import { Input, Textarea } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import {
-  agentNameSchema, soulPromptSchema, systemPromptSchema,
+  agentNameSchema, soulPromptSchema,
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
 import { cn } from '@/lib/utils';
@@ -115,7 +114,6 @@ function StepRouter({
   switch (step) {
     case 'name':             return <StepName />;
     case 'soul':             return <StepSoul session={session} />;
-    case 'system_prompt':    return <StepSystemPrompt session={session} />;
     case 'telegram_credentials': return <StepTelegramCredentials session={session} />;
     case 'telegram_code':    return <StepTelegramCode session={session} setTelegramCode={setTelegramCode} />;
     case 'telegram_2fa':     return <StepTelegram2FA session={session} telegramCode={telegramCode} />;
@@ -235,51 +233,6 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
           Продолжить →
         </Button>
       </div>
-    </form>
-  );
-}
-
-// ── Step 3: System Prompt ─────────────────────────────────────────────────────
-function StepSystemPrompt({ session }: { session: OnboardingSessionRow | null }) {
-  const { toast } = useToast();
-  const save = useSaveSystemPrompt();
-  const [prompt, setPrompt] = useState(session?.system_prompt ?? DEFAULT_SYSTEM_PROMPT);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const result = systemPromptSchema.safeParse({ system_prompt: prompt });
-    if (!result.success) {
-      setError(result.error.issues[0]?.message ?? 'Ошибка');
-      return;
-    }
-    setError('');
-    try {
-      await save.mutateAsync({ system_prompt: prompt });
-    } catch {
-      toast('Не удалось сохранить', 'error');
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="03 / 05"
-        title="Системный промпт"
-        description="Базовые инструкции для агента. Определяет как он принимает решения и ведёт себя в разговорах."
-      />
-      <Textarea
-        label="System Prompt"
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        error={error}
-        className="min-h-[240px]"
-        showCount
-        maxLength={20000}
-      />
-      <Button type="submit" isLoading={save.isPending} size="lg">
-        Продолжить →
-      </Button>
     </form>
   );
 }

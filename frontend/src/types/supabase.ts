@@ -22,7 +22,6 @@ export interface Database {
           name: string;
           state: 'draft' | 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
           soul_prompt: string | null;
-          system_prompt: string | null;
           settings: Json | null;
           created_at: string;
           updated_at: string;
@@ -33,7 +32,6 @@ export interface Database {
           name: string;
           state?: 'draft' | 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
           soul_prompt?: string | null;
-          system_prompt?: string | null;
           settings?: Json | null;
           created_at?: string;
           updated_at?: string;
@@ -44,7 +42,6 @@ export interface Database {
           name?: string;
           state?: 'draft' | 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
           soul_prompt?: string | null;
-          system_prompt?: string | null;
           settings?: Json | null;
           created_at?: string;
           updated_at?: string;
@@ -128,7 +125,6 @@ export interface Database {
           owner_id: string;
           agent_name: string | null;
           soul_prompt: string | null;
-          system_prompt: string | null;
           authorization_status: 'not_started' | 'code_requested' | 'password_required' | 'authorized' | 'error';
           phone_number: string | null;
           completed_agent_id: string | null;
@@ -140,7 +136,6 @@ export interface Database {
           owner_id: string;
           agent_name?: string | null;
           soul_prompt?: string | null;
-          system_prompt?: string | null;
           authorization_status?: 'not_started' | 'code_requested' | 'password_required' | 'authorized' | 'error';
           phone_number?: string | null;
           completed_agent_id?: string | null;
@@ -152,7 +147,6 @@ export interface Database {
           owner_id?: string;
           agent_name?: string | null;
           soul_prompt?: string | null;
-          system_prompt?: string | null;
           authorization_status?: 'not_started' | 'code_requested' | 'password_required' | 'authorized' | 'error';
           phone_number?: string | null;
           completed_agent_id?: string | null;

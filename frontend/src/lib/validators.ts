@@ -134,11 +134,6 @@ export const agentSettingsSchema = z.object({
     .min(0)
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
-  system_prompt: z
-    .string()
-    .min(0)
-    .max(20_000, 'Системный промпт не должен превышать 20 000 символов')
-    .trim(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

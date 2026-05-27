@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { getSupabaseClient } from '@/lib/supabase/client';
@@ -17,7 +17,7 @@ const SUPABASE_ERROR_MESSAGES: Record<string, string> = {
   'Too many requests': 'Слишком много попыток. Подождите немного',
 };
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { toast } = useToast();
@@ -217,5 +217,13 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-void-950 flex items-center justify-center font-mono text-void-500">Loading...</div>}>
+      <LoginContent />
+    </Suspense>
   );
 }
