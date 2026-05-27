@@ -232,7 +232,17 @@ class MimicAgentRuntime:
                     self._chat_mute_cache.pop(peer, None)
                     
             if peer not in self._chat_mute_cache:
-                input_chat = getattr(event, "input_chat", None)
+                input_chat = None
+                get_input_chat = getattr(event, "get_input_chat", None)
+                if callable(get_input_chat):
+                    try:
+                        input_chat = await event.get_input_chat()
+                    except Exception:
+                        pass
+                
+                if input_chat is None:
+                    input_chat = getattr(event, "input_chat", None)
+                
                 if input_chat is None:
                     input_chat = await self._telegram_client.get_input_entity(peer)
                 

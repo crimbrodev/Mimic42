@@ -1526,7 +1526,8 @@ class TelegramToolbox:
         try:
             res = await self._client(functions.messages.GetDialogFiltersRequest())
             folders = []
-            for f in res:
+            filters = res.filters if hasattr(res, "filters") else res
+            for f in filters:
                 if isinstance(f, types.DialogFilter):
                     folders.append({
                         "id": f.id,
