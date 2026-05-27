@@ -663,6 +663,49 @@ def _get_content(value: object) -> str | None:
     return None
 
 
+def _interpret_agent_response(response: object) -> tuple[bool, str, int | None]:
+    """Interpret a LangChain agent response into (send_any_message, text, reply_to).
+
+    This function supports:
+    - plain string responses
+    - mapping-like responses produced by LangChain (dict-like), including parsed
+      output from OutputParsers / PydanticOutputParser where fields like
+      'send_any_message', 'text', and 'reply_to' may be present.
+
+    Falls back to extracting the best available textual content.
+    """
+    # Default behaviour: send message, text from _extract_response_text, no reply
+    default_text = _extract_response_text(response)
+
+    if isinstance(response, Mapping):
+        resp_map = cast("Mapping[str, Any]", response)
+        # send_any_message may be absent; treat non-bool as True
+        raw_send = resp_map.get("send_any_message")
+        send_any = bool(raw_send) if isinstance(raw_send, bool) else True
+
+        # prefer explicit 'text' field, then 'output'/'content' via extractor
+        txt = resp_map.get("text")
+        if isinstance(txt, str) and txt:
+            text = txt
+        else:
+            text = default_text
+
+        reply_val = resp_map.get("reply_to") or resp_map.get("reply_to_message_id")
+        reply_to = None
+        if isinstance(reply_val, int):
+            reply_to = reply_val
+        elif isinstance(reply_val, str) and reply_val.isdigit():
+            try:
+                reply_to = int(reply_val)
+            except Exception:
+                reply_to = None
+
+        return send_any, text, reply_to
+
+    # Non-mapping responses: send and use extracted text
+    return True, default_text, None
+
+
 def _extract_message_id(message: object) -> str | None:
     if isinstance(message, Mapping):
         message_map = cast("Mapping[str, Any]", message)
