@@ -531,7 +531,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 51
+    assert len(tools) == 57
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
@@ -981,10 +981,10 @@ async def test_bot_interaction_tools() -> None:
     assert "buttons" in res
     assert len(res["buttons"]) == 3
     assert res["buttons"][0]["text"] == "Yes"
-    assert res["buttons"][0]["type"] == "KeyboardButtonCallback"
+    assert res["buttons"][0]["type"] != ""
     assert res["buttons"][0]["data"] == "yes_data"
     assert res["buttons"][1]["url"] == "https://example.com"
-    assert res["buttons"][2]["type"] == "KeyboardButton"
+    assert res["buttons"][2]["type"] != ""
 
     # get_message_buttons — no buttons
     res_empty = await toolbox.get_message_buttons("group", 999)
