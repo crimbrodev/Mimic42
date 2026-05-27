@@ -132,6 +132,30 @@ class FakeTelethonClient:
             res = MagicMock(spec=types.messages.MessageReactionsList)
             res.reactions = [reaction]
             return res
+        elif isinstance(request, functions.messages.GetDialogFiltersRequest):
+            filter_custom = MagicMock(spec=types.DialogFilter)
+            filter_custom.id = 2
+            filter_custom.title = MagicMock()
+            filter_custom.title.text = "Work"
+            filter_custom.emoticon = "💼"
+            filter_custom.color = 1
+            filter_custom.pinned_peers = [types.InputPeerUser(user_id=123, access_hash=0)]
+            filter_custom.include_peers = [types.InputPeerChannel(channel_id=456, access_hash=0)]
+            filter_custom.exclude_peers = []
+            filter_custom.contacts = True
+            filter_custom.non_contacts = False
+            filter_custom.groups = True
+            filter_custom.broadcasts = False
+            filter_custom.bots = False
+            filter_custom.exclude_muted = True
+            filter_custom.exclude_read = False
+            filter_custom.exclude_archived = True
+
+            filter_default = MagicMock(spec=types.DialogFilterDefault)
+
+            return [filter_custom, filter_default]
+        elif isinstance(request, functions.messages.UpdateDialogFilterRequest):
+            return True
         return True
 
     async def get_entity(self, peer: Any) -> Any:
@@ -478,7 +502,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 51
+    assert len(tools) == 59
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
@@ -486,6 +510,14 @@ async def test_tools_exposed_in_langchain() -> None:
     assert "transcribe_voice_note" in tool_names
     assert "read_document_file" in tool_names
     assert "set_wakeup_timer" in tool_names
+    assert "mute_chat" in tool_names
+    assert "unmute_chat" in tool_names
+    assert "send_location" in tool_names
+    assert "send_venue" in tool_names
+    assert "search_location" in tool_names
+    assert "get_chat_folders" in tool_names
+    assert "create_or_update_chat_folder" in tool_names
+    assert "delete_chat_folder" in tool_names
 
 
 @pytest.mark.asyncio
@@ -916,3 +948,174 @@ async def test_transcribe_and_read_file_tools() -> None:
     res_read = await toolbox.read_document_file("doc:123:456:0102:2:info.txt")
     assert res_read["success"] is True
     assert "содержимое" in res_read["content"]
+
+
+@pytest.mark.asyncio
+async def test_mute_and_unmute_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # Test mute_chat indefinite
+    res = await toolbox.mute_chat("group")
+    assert res["success"] is True
+    assert len(client.requests) == 1
+    req = client.requests[0]
+    assert isinstance(req, functions.account.UpdateNotifySettingsRequest)
+    assert req.settings.silent is True
+    assert req.settings.mute_until is not None
+
+    # Test mute_chat with custom duration
+    res_dur = await toolbox.mute_chat("group", duration_hours=2)
+    assert res_dur["success"] is True
+    assert len(client.requests) == 2
+    req_dur = client.requests[1]
+    assert req_dur.settings.silent is True
+
+    # Test unmute_chat
+    res_unmute = await toolbox.unmute_chat("group")
+    assert res_unmute["success"] is True
+    assert len(client.requests) == 3
+    req_unmute = client.requests[2]
+    assert req_unmute.settings.silent is False
+    assert req_unmute.settings.mute_until == datetime(1970, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_location_and_venue_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # Test send_location
+    res = await toolbox.send_location("group", latitude=59.9398, longitude=30.3146)
+    assert res["success"] is True
+    assert res["message_id"] == 999
+    
+    # Assert send_file calls
+    send_file_calls = [c for c in client.calls if c[0] == "send_file"]
+    assert len(send_file_calls) == 1
+    call_args = send_file_calls[0][1]
+    assert isinstance(call_args["file"], types.InputMediaGeoPoint)
+    assert call_args["file"].geo_point.lat == 59.9398
+    assert call_args["file"].geo_point.long == 30.3146
+
+    # Test send_venue
+    res_venue = await toolbox.send_venue(
+        "group",
+        latitude=48.8584,
+        longitude=2.2945,
+        title="Eiffel Tower",
+        address="Champ de Mars, Paris"
+    )
+    assert res_venue["success"] is True
+    assert res_venue["message_id"] == 999
+
+    send_file_calls_updated = [c for c in client.calls if c[0] == "send_file"]
+    assert len(send_file_calls_updated) == 2
+    call_args_venue = send_file_calls_updated[1][1]
+    assert isinstance(call_args_venue["file"], types.InputMediaVenue)
+    assert call_args_venue["file"].geo_point.lat == 48.8584
+    assert call_args_venue["file"].geo_point.long == 2.2945
+    assert call_args_venue["file"].title == "Eiffel Tower"
+    assert call_args_venue["file"].address == "Champ de Mars, Paris"
+
+
+import json
+
+@pytest.mark.asyncio
+async def test_search_location_tool(monkeypatch) -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.data = json.dumps({
+                "candidates": [
+                    {
+                        "address": "Eiffel Tower, Paris, France",
+                        "location": {"x": 2.2945, "y": 48.8584}
+                    }
+                ]
+            }).encode("utf-8")
+
+        def read(self) -> bytes:
+            return self.data
+
+        def __enter__(self) -> "FakeResponse":
+            return self
+
+        def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+            pass
+
+    def mock_urlopen(*args: Any, **kwargs: Any) -> FakeResponse:
+        return FakeResponse()
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    res = await toolbox.search_location("Eiffel Tower")
+    assert res["success"] is True
+    assert res["latitude"] == 48.8584
+    assert res["longitude"] == 2.2945
+    assert res["address"] == "Eiffel Tower, Paris, France"
+
+
+@pytest.mark.asyncio
+async def test_chat_folder_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # 1. Test get_chat_folders
+    folders = await toolbox.get_chat_folders()
+    assert len(folders) == 2
+
+    f_custom = [f for f in folders if f.get("id") == 2][0]
+    assert f_custom["title"] == "Work"
+    assert f_custom["emoticon"] == "💼"
+    assert f_custom["color"] == 1
+    assert f_custom["contacts"] is True
+    assert f_custom["groups"] is True
+    assert f_custom["exclude_muted"] is True
+    assert len(f_custom["pinned_peers"]) == 1
+    assert f_custom["pinned_peers"][0]["type"] == "user"
+    assert f_custom["pinned_peers"][0]["id"] == 123
+    assert len(f_custom["include_peers"]) == 1
+    assert f_custom["include_peers"][0]["type"] == "channel"
+    assert f_custom["include_peers"][0]["id"] == 456
+
+    f_default = [f for f in folders if f.get("id") == 0][0]
+    assert f_default["title"] == "All Chats"
+    assert f_default["type"] == "default"
+
+    # 2. Test create_or_update_chat_folder
+    res_create = await toolbox.create_or_update_chat_folder(
+        folder_id=3,
+        title="Friends",
+        emoticon="👥",
+        color=2,
+        pinned_peers=["username"],
+        include_peers=["group"],
+        contacts=True,
+    )
+    assert res_create["success"] is True
+
+    update_reqs = [r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)]
+    assert len(update_reqs) == 1
+    req = update_reqs[0]
+    assert req.id == 3
+    assert req.filter.title == "Friends"
+    assert req.filter.emoticon == "👥"
+    assert req.filter.color == 2
+    assert req.filter.contacts is True
+    assert len(req.filter.pinned_peers) == 1
+    assert len(req.filter.include_peers) == 1
+
+    # 3. Test delete_chat_folder
+    res_delete = await toolbox.delete_chat_folder(folder_id=3)
+    assert res_delete["success"] is True
+
+    update_reqs_updated = [r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)]
+    assert len(update_reqs_updated) == 2
+    req_del = update_reqs_updated[1]
+    assert req_del.id == 3
+    assert req_del.filter is None
+

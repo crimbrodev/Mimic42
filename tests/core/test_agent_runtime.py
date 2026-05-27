@@ -453,3 +453,89 @@ async def test_set_wakeup_timer_tool_and_scheduler() -> None:
     assert telegram.sent_messages[0] == (12345, "timer triggered reply")
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+    from telethon.tl import functions
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = True
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="should not reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 0  # type: ignore
+    assert len(telegram.sent_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+    from telethon.tl import functions
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = False
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="should reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    assert telegram.sent_messages == [(12345, "should reply")]

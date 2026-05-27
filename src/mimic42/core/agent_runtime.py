@@ -104,6 +104,7 @@ class MimicAgentRuntime:
         self._trigger_lock = asyncio.Lock()
         self._message_handler_registered = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
+        self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
 
     @property
@@ -214,6 +215,49 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: object) -> None:
+        # Check if chat is muted
+        try:
+            peer = await _extract_incoming_peer(event)
+            import time
+            now_ts = time.time()
+            
+            is_muted = False
+            if peer in self._chat_mute_cache:
+                cached_muted, expiry = self._chat_mute_cache[peer]
+                if now_ts < expiry:
+                    is_muted = cached_muted
+                    if is_muted:
+                        return
+                else:
+                    self._chat_mute_cache.pop(peer, None)
+                    
+            if peer not in self._chat_mute_cache:
+                input_chat = getattr(event, "input_chat", None)
+                if input_chat is None:
+                    input_chat = await self._telegram_client.get_input_entity(peer)
+                
+                from telethon import functions, types
+                notify_peer = types.InputNotifyPeer(peer=input_chat)
+                res = await self._telegram_client(functions.account.GetNotifySettingsRequest(peer=notify_peer))
+                
+                is_muted = False
+                if res.silent:
+                    is_muted = True
+                if res.mute_until:
+                    from datetime import datetime
+                    now = datetime.now(res.mute_until.tzinfo) if res.mute_until.tzinfo else datetime.now()
+                    if res.mute_until > now:
+                        is_muted = True
+                
+                self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
+                
+                if is_muted:
+                    return
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            pass
+
         raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
         if not isinstance(raw_text, str):
             raw_text = ""

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -459,6 +459,46 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def mute_chat(self, peer: str, duration_hours: int | None = None) -> dict[str, Any]:
+        """Mute a chat. If duration_hours is not specified, it will be muted indefinitely (10 years)."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            notify_peer = types.InputNotifyPeer(peer=entity)
+            if duration_hours is not None:
+                until = datetime.now() + timedelta(hours=duration_hours)
+            else:
+                until = datetime.now() + timedelta(days=365 * 10)  # 10 years (safe from 32-bit epoch overflow)
+            await self._client(
+                functions.account.UpdateNotifySettingsRequest(
+                    peer=notify_peer,
+                    settings=types.InputPeerNotifySettings(
+                        mute_until=until,
+                        silent=True
+                    )
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def unmute_chat(self, peer: str) -> dict[str, Any]:
+        """Unmute a chat, enabling notifications."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            notify_peer = types.InputNotifyPeer(peer=entity)
+            await self._client(
+                functions.account.UpdateNotifySettingsRequest(
+                    peer=notify_peer,
+                    settings=types.InputPeerNotifySettings(
+                        mute_until=datetime(1970, 1, 1),
+                        silent=False
+                    )
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def get_common_chats(self, peer: str) -> list[dict[str, Any]]:
         """Get common groups/channels with a user."""
         try:
@@ -680,6 +720,74 @@ class TelegramToolbox:
                 entity, file_input, video_note=True, reply_to=reply_to_msg_id
             )
             return {"success": True, "message_id": msg.id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
+        """Send a map location pin with specific latitude and longitude."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            msg = await self._client.send_file(
+                entity,
+                types.InputMediaGeoPoint(
+                    geo_point=types.InputGeoPoint(lat=latitude, long=longitude)
+                )
+            )
+            return {"success": True, "message_id": msg.id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def send_venue(
+        self, peer: str, latitude: float, longitude: float, title: str, address: str
+    ) -> dict[str, Any]:
+        """Send a beautiful venue location card with a map pin, title, and address."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            msg = await self._client.send_file(
+                entity,
+                types.InputMediaVenue(
+                    geo_point=types.InputGeoPoint(lat=latitude, long=longitude),
+                    title=title,
+                    address=address,
+                    provider="",
+                    venue_id="",
+                    venue_type=""
+                )
+            )
+            return {"success": True, "message_id": msg.id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def search_location(self, query: str) -> dict[str, Any]:
+        """Search for a location/address and return its coordinates and formatted address using ArcGIS."""
+        try:
+            import urllib.request
+            import urllib.parse
+            import json
+            import asyncio
+
+            url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+
+            def _fetch():
+                with urllib.request.urlopen(req) as resp:
+                    return json.loads(resp.read().decode())
+
+            data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+
+            if not data.get("candidates"):
+                return {"success": False, "error": "Location not found"}
+
+            candidate = data["candidates"][0]
+            location = candidate["location"]
+            address = candidate["address"]
+
+            return {
+                "success": True,
+                "latitude": location["y"],
+                "longitude": location["x"],
+                "address": address
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1401,6 +1509,129 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # Category 7: Chat Folder Management
+
+    def _serialize_peer(self, peer: Any) -> dict[str, Any]:
+        """Helper to serialize InputPeer/Peer objects into a simple dict."""
+        if isinstance(peer, (types.InputPeerUser, types.PeerUser)):
+            return {"type": "user", "id": getattr(peer, "user_id", None)}
+        elif isinstance(peer, (types.InputPeerChannel, types.PeerChannel)):
+            return {"type": "channel", "id": getattr(peer, "channel_id", None)}
+        elif isinstance(peer, (types.InputPeerChat, types.PeerChat)):
+            return {"type": "chat", "id": getattr(peer, "chat_id", None)}
+        return {"type": "unknown", "id": getattr(peer, "id", None) or getattr(peer, "peer_id", None)}
+
+    async def get_chat_folders(self) -> list[dict[str, Any]]:
+        """Get user's chat folders (dialog filters)."""
+        try:
+            res = await self._client(functions.messages.GetDialogFiltersRequest())
+            folders = []
+            for f in res:
+                if isinstance(f, types.DialogFilter):
+                    folders.append({
+                        "id": f.id,
+                        "title": f.title.text if hasattr(f.title, "text") else str(f.title),
+                        "emoticon": f.emoticon,
+                        "color": f.color,
+                        "pinned_peers": [self._serialize_peer(p) for p in (f.pinned_peers or [])],
+                        "include_peers": [self._serialize_peer(p) for p in (f.include_peers or [])],
+                        "exclude_peers": [self._serialize_peer(p) for p in (f.exclude_peers or [])],
+                        "contacts": bool(f.contacts),
+                        "non_contacts": bool(f.non_contacts),
+                        "groups": bool(f.groups),
+                        "broadcasts": bool(f.broadcasts),
+                        "bots": bool(f.bots),
+                        "exclude_muted": bool(f.exclude_muted),
+                        "exclude_read": bool(f.exclude_read),
+                        "exclude_archived": bool(f.exclude_archived),
+                    })
+                elif isinstance(f, types.DialogFilterDefault):
+                    folders.append({
+                        "id": 0,
+                        "title": "All Chats",
+                        "type": "default"
+                    })
+            return folders
+        except Exception as e:
+            return [{"error": str(e)}]
+
+    async def create_or_update_chat_folder(
+        self,
+        folder_id: int,
+        title: str,
+        emoticon: str | None = None,
+        color: int | None = None,
+        pinned_peers: list[str] | None = None,
+        include_peers: list[str] | None = None,
+        exclude_peers: list[str] | None = None,
+        contacts: bool | None = None,
+        non_contacts: bool | None = None,
+        groups: bool | None = None,
+        broadcasts: bool | None = None,
+        bots: bool | None = None,
+        exclude_muted: bool | None = None,
+        exclude_read: bool | None = None,
+        exclude_archived: bool | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a custom chat folder (dialog filter)."""
+        try:
+            async def resolve_peers(peer_list):
+                if not peer_list:
+                    return []
+                resolved = []
+                for p in peer_list:
+                    try:
+                        entity = await self._client.get_input_entity(p)
+                        resolved.append(entity)
+                    except Exception:
+                        pass
+                return resolved
+
+            pinned = await resolve_peers(pinned_peers)
+            included = await resolve_peers(include_peers)
+            excluded = await resolve_peers(exclude_peers)
+
+            folder = types.DialogFilter(
+                id=folder_id,
+                title=title,
+                pinned_peers=pinned,
+                include_peers=included,
+                exclude_peers=excluded,
+                contacts=contacts,
+                non_contacts=non_contacts,
+                groups=groups,
+                broadcasts=broadcasts,
+                bots=bots,
+                exclude_muted=exclude_muted,
+                exclude_read=exclude_read,
+                exclude_archived=exclude_archived,
+                emoticon=emoticon,
+                color=color,
+            )
+
+            await self._client(
+                functions.messages.UpdateDialogFilterRequest(
+                    id=folder_id,
+                    filter=folder
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def delete_chat_folder(self, folder_id: int) -> dict[str, Any]:
+        """Delete a chat folder by its ID."""
+        try:
+            await self._client(
+                functions.messages.UpdateDialogFilterRequest(
+                    id=folder_id,
+                    filter=None
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 def build_telegram_langchain_tools(
     client: TelethonRequestClient,
@@ -1679,5 +1910,45 @@ def build_telegram_langchain_tools(
             description=(
                 "Set a wakeup timer to trigger a delayed task in a chat after a delay in seconds."
             ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.mute_chat,
+            name="mute_chat",
+            description="Mute a chat. If duration_hours is not specified, it is muted indefinitely (10 years).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.unmute_chat,
+            name="unmute_chat",
+            description="Unmute a chat to enable normal message notifications.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.send_location,
+            name="send_location",
+            description="Send a map location pin with specific latitude and longitude coordinates.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.send_venue,
+            name="send_venue",
+            description="Send a beautiful venue location card with a map pin, title, and address.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.search_location,
+            name="search_location",
+            description="Search for a location or address and return its coordinates and formatted address using ArcGIS.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_chat_folders,
+            name="get_chat_folders",
+            description="Get user's chat folders (dialog filters).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.create_or_update_chat_folder,
+            name="create_or_update_chat_folder",
+            description="Create or update a custom chat folder (dialog filter).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.delete_chat_folder,
+            name="delete_chat_folder",
+            description="Delete a custom chat folder by its ID.",
         ),
     ]
