@@ -171,19 +171,40 @@ class MimicAgentRuntime:
                     "messages": messages,
                 }
             )
-            response_text = _extract_response_text(response)
-            
+
+            # Interpret structured response if provided by the agent. Expected format:
+            # { "send_any_message": bool, "text": str, "reply_to": int|str }
+            send_any, response_text, reply_to = _interpret_agent_response(response)
+
             # Convert stringified numeric peer ID to integer for Telethon compatibility
             peer_id: str | int = trigger.peer
             if peer_id.startswith("-") and peer_id[1:].isdigit():
                 peer_id = int(peer_id)
             elif peer_id.isdigit():
                 peer_id = int(peer_id)
-                
-            sent_message = await self._telegram_client.send_message(
-                peer_id,
-                response_text,
-            )
+
+            sent_message = None
+            if send_any:
+                # Pass reply_to if provided (Telethon accepts reply_to keyword)
+                if reply_to is not None:
+                    try:
+                        sent_message = await self._telegram_client.send_message(
+                            peer_id,
+                            response_text,
+                            reply_to=reply_to,
+                        )
+                    except TypeError:
+                        # Fallback for clients that don't accept reply_to as kwarg
+                        sent_message = await self._telegram_client.send_message(
+                            peer_id,
+                            response_text,
+                        )
+                else:
+                    sent_message = await self._telegram_client.send_message(
+                        peer_id,
+                        response_text,
+                    )
+
             await self._memory_service.save_turn(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
@@ -196,7 +217,7 @@ class MimicAgentRuntime:
             peer=trigger.peer,
             input_text=trigger.text,
             response_text=response_text,
-            telegram_message_id=_extract_message_id(sent_message),
+            telegram_message_id=_extract_message_id(sent_message) if sent_message is not None else None,
         )
 
     def _register_message_handler(self) -> None:
