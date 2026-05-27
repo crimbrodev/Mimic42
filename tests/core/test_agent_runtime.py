@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -215,7 +217,7 @@ async def test_runtime_registers_incoming_message_handler_and_replies() -> None:
     await telegram.emit_message(FakeIncomingEvent(chat_id=99, message_id=777, text="incoming"))
 
     assert len(telegram.handlers) == 1
-    assert telegram.sent_messages == [("chat:99", "reply to incoming")]
+    assert telegram.sent_messages == [(99, "reply to incoming")]
 
 
 @pytest.mark.asyncio
@@ -248,3 +250,206 @@ async def test_manager_keeps_multiple_agents_per_owner_and_shuts_them_down() -> 
 
     assert first.state is AgentRuntimeState.STOPPED
     assert second.state is AgentRuntimeState.STOPPED
+
+
+class MockDocAttribute:
+    def __init__(self, file_name: str) -> None:
+        self.file_name = file_name
+
+
+class MockDocument:
+    def __init__(self, filename: str) -> None:
+        self.id = 12345
+        self.access_hash = 67890
+        self.file_reference = b"ref"
+        self.dc_id = 1
+        self.attributes = [MockDocAttribute(filename)]
+
+
+class MockMedia:
+    def __init__(self, filename: str) -> None:
+        self.document = MockDocument(filename)
+
+
+class MockMessage:
+    def __init__(self, filename: str) -> None:
+        self.media = MockMedia(filename)
+        self.date = datetime(2026, 5, 27, 12, 0, 0)
+
+
+class MockSender:
+    def __init__(self) -> None:
+        self.first_name = "Alice"
+        self.last_name = "Smith"
+        self.username = "alice_smith"
+        self.id = 98765
+
+
+class MockChat:
+    def __init__(self) -> None:
+        self.title = "Test Group Chat"
+        self.username = "test_group"
+
+
+class MockEventWithMedia:
+    def __init__(self, filename: str, client: object) -> None:
+        self.message = MockMessage(filename)
+        self.client = client
+        self.is_private = False
+        self.is_group = True
+        self.is_channel = False
+        self.sender_id = 98765
+        self.chat_id = 12345
+        self.date = datetime(2026, 5, 27, 12, 0, 0)
+
+    async def get_chat(self) -> MockChat:
+        return MockChat()
+
+    async def get_sender(self) -> MockSender:
+        return MockSender()
+
+
+@pytest.mark.asyncio
+async def test_rich_message_trigger_and_txt_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegramClient()
+
+    async def mock_download_media(message: object, file: Any) -> bytes:
+        file.write(b"Line 1 content\nLine 2 content")
+        return b"Line 1 content\nLine 2 content"
+
+    telegram.download_media = mock_download_media  # type: ignore
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="agent-ack"),
+    )
+    await runtime.start()
+
+    monkeypatch.setattr(
+        "mimic42.integrations.telegram_tools.format_media_object",
+        lambda msg: "doc:12345:67890:726566:1:report.txt",
+    )
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = MockEventWithMedia("report.txt", telegram)
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    prompt_text = runtime._langchain_agent.inputs[0]["messages"][-1]["content"]  # type: ignore
+
+    assert "[Входящее сообщение]" in prompt_text
+    assert "Время: 2026-05-27 12:00:00" in prompt_text
+    assert 'Чат: Группа "Test Group Chat"' in prompt_text
+    assert "Отправитель: Alice Smith (@alice_smith, ID: 98765)" in prompt_text
+    assert "report.txt" in prompt_text
+    assert "Line 1 content" in prompt_text
+    assert "Line 2 content" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_unsupported_document_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="ack"),
+    )
+    await runtime.start()
+
+    monkeypatch.setattr(
+        "mimic42.integrations.telegram_tools.format_media_object",
+        lambda msg: "doc:12345:67890:726566:1:document.pdf",
+    )
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = MockEventWithMedia("document.pdf", telegram)
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    prompt_text = runtime._langchain_agent.inputs[0]["messages"][-1]["content"]  # type: ignore
+    assert "[Файл name=document.pdf (этот тип документа нельзя открыть)]" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_set_wakeup_timer_tool_and_scheduler() -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from mimic42.integrations.database_models import (
+        AgentModel,
+        AgentTimerModel,
+        Base,
+        ProfileModel,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    agent_id = uuid4()
+    owner_id = uuid4()
+
+    async with session_factory() as session:
+        session.add(ProfileModel(id=owner_id))
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Test Agent",
+            )
+        )
+        await session.commit()
+
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id=agent_id, owner_id=owner_id),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="timer triggered reply"),
+        session_factory=session_factory,
+    )
+
+    from mimic42.integrations.telegram_tools import TelegramToolbox
+
+    toolbox = TelegramToolbox(telegram, agent_id=agent_id, session_factory=session_factory)
+
+    res = await toolbox.set_wakeup_timer(
+        peer="12345", delay_seconds=0, description="Process analytics"
+    )
+    assert res["success"] is True
+
+    async with session_factory() as session:
+        from sqlalchemy import select
+
+        stmt = select(AgentTimerModel).where(AgentTimerModel.agent_id == agent_id)
+        db_timers = list(await session.scalars(stmt))
+        assert len(db_timers) == 1
+        assert db_timers[0].peer == "12345"
+        assert db_timers[0].status == "pending"
+        assert db_timers[0].description == "Process analytics"
+
+    # Call scheduler trigger manually (without start() loop to avoid dual trigger race condition)
+    await runtime._check_and_trigger_timers()
+
+    async with session_factory() as session:
+        db_timers = list(await session.scalars(stmt))
+        assert db_timers[0].status == "succeeded"
+
+    assert len(telegram.sent_messages) == 1
+    assert telegram.sent_messages[0] == (12345, "timer triggered reply")
+
+    await engine.dispose()

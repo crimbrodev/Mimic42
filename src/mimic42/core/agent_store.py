@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
 
@@ -20,14 +20,17 @@ class AgentRecord(BaseModel):
 
 
 class AgentMessageRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
     peer: str
     role: str
     content: str
+    direction: str = "inbound"
     created_at: datetime
 
 
 class AgentActivity(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
     event_type: str
     status: str

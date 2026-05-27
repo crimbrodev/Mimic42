@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 
@@ -91,15 +92,19 @@ class MimicAgentRuntime:
         telegram_client: TelegramClientLike,
         langchain_agent: LangChainAgentLike,
         memory_service: MemoryServiceLike | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
         self._langchain_agent = langchain_agent
         self._memory_service = memory_service or RuntimeMemoryService()
+        self._session_factory = session_factory
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
         self._message_handler_registered = False
+        self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
+        self._scheduler_task: asyncio.Task[None] | None = None
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -131,6 +136,8 @@ class MimicAgentRuntime:
                 raise
 
             self._state = AgentRuntimeState.RUNNING
+            if self._session_factory is not None:
+                self._scheduler_task = asyncio.create_task(self._run_scheduler_loop())
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
@@ -138,6 +145,14 @@ class MimicAgentRuntime:
                 return
 
             self._state = AgentRuntimeState.STOPPING
+            if self._scheduler_task is not None:
+                self._scheduler_task.cancel()
+                try:
+                    await self._scheduler_task
+                except asyncio.CancelledError:
+                    pass
+                self._scheduler_task = None
+
             await self._telegram_client.disconnect()
             self._state = AgentRuntimeState.STOPPED
 
@@ -157,8 +172,16 @@ class MimicAgentRuntime:
                 }
             )
             response_text = _extract_response_text(response)
+            
+            # Convert stringified numeric peer ID to integer for Telethon compatibility
+            peer_id: str | int = trigger.peer
+            if peer_id.startswith("-") and peer_id[1:].isdigit():
+                peer_id = int(peer_id)
+            elif peer_id.isdigit():
+                peer_id = int(peer_id)
+                
             sent_message = await self._telegram_client.send_message(
-                trigger.peer,
+                peer_id,
                 response_text,
             )
             await self._memory_service.save_turn(
@@ -191,9 +214,145 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: object) -> None:
-        text = _extract_incoming_text(event)
+        raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
+        if not isinstance(raw_text, str):
+            raw_text = ""
+
+        # Process attachments in memory and transcribers
+        text = await _process_media_and_text(event, raw_text)
         if not text:
             return
+
+        # Format sender name and metadata
+        is_private = getattr(event, "is_private", False)
+        is_group = getattr(event, "is_group", False)
+
+        from datetime import datetime
+        msg_date = getattr(event, "date", None)
+        if not msg_date:
+            message = getattr(event, "message", None)
+            msg_date = getattr(message, "date", None)
+        if not msg_date:
+            msg_date = datetime.now()
+        time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Chat name
+        if is_private:
+            chat_type_str = "ЛС"
+        else:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, "title", "")
+            if not chat_title:
+                chat_title = (
+                    getattr(chat, "username", "")
+                    or str(getattr(event, "chat_id", ""))
+                )
+            if is_group:
+                chat_type_str = f'Группа "{chat_title}"'
+            else:
+                chat_type_str = f'Канал "{chat_title}"'
+
+        # Sender details
+        get_sender = getattr(event, "get_sender", None)
+        sender = None
+        if callable(get_sender):
+            try:
+                import inspect
+                res = get_sender()
+                if inspect.isawaitable(res):
+                    sender = await res
+                else:
+                    sender = res
+            except Exception:
+                pass
+        if sender:
+            first_name = getattr(sender, "first_name", None) or ""
+            last_name = getattr(sender, "last_name", None) or ""
+            name_parts = []
+            if first_name:
+                name_parts.append(first_name)
+            if last_name:
+                name_parts.append(last_name)
+            name_str = " ".join(name_parts)
+            if not name_str:
+                name_str = (
+                    getattr(sender, "title", None)
+                    or getattr(sender, "username", None)
+                    or str(getattr(sender, "id", ""))
+                )
+            if not name_str:
+                name_str = "Unknown"
+
+            username = getattr(sender, "username", None)
+            username_str = f"@{username}" if username else ""
+            sender_id = getattr(sender, "id", None)
+            id_str = f"ID: {sender_id}" if sender_id else ""
+
+            details = ", ".join(filter(None, [username_str, id_str]))
+            details_str = f" ({details})" if details else ""
+            sender_str = f"{name_str}{details_str}"
+        else:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, "title", "Unknown")
+            sender_str = chat_title
+
+        # Check role/title
+        title = None
+        if getattr(event, "sender_id", None) and getattr(event, "chat_id", None):
+            chat_id = event.chat_id
+            sender_id = event.sender_id
+            cache_key = (chat_id, sender_id)
+            import time
+            now_ts = time.time()
+            if cache_key in self._member_tag_cache:
+                cached_title, expiry = self._member_tag_cache[cache_key]
+                if now_ts < expiry:
+                    title = cached_title
+
+            is_expired = (
+                cache_key not in self._member_tag_cache
+                or now_ts >= self._member_tag_cache[cache_key][1]
+            )
+            if is_expired:
+                try:
+                    from telethon.tl import functions
+                    is_supergroup = getattr(event, "is_channel", False)
+                    if is_supergroup:
+                        input_chat = getattr(event, "input_chat", None) or chat_id
+                        input_sender = (
+                            getattr(event, "input_sender", None) or sender_id
+                        )
+                        res = await event.client(
+                            functions.channels.GetParticipantRequest(
+                                channel=input_chat,
+                                participant=input_sender,
+                            )
+                        )
+                        title = (
+                            res.participant.title
+                            if hasattr(res.participant, "title")
+                            else None
+                        )
+                except Exception:
+                    title = None
+                self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+
+        # Fallback to channel post author signature
+        post_author = getattr(getattr(event, "message", None), "post_author", None)
+        if not title and post_author:
+            title = post_author
+
+        if title:
+            sender_str += f" [Подпись/Роль: {title}]"
+
+        # Format output message text
+        text = (
+            f"[Входящее сообщение]\n"
+            f"Время: {time_str}\n"
+            f"Чат: {chat_type_str}\n"
+            f"Отправитель: {sender_str}\n"
+            f"Содержимое: {text}"
+        )
 
         peer = await _extract_incoming_peer(event)
         await self.trigger_message(
@@ -203,6 +362,241 @@ class MimicAgentRuntime:
                 message_id=_extract_incoming_message_id(event),
             )
         )
+
+    async def _run_scheduler_loop(self) -> None:
+        """Background loop to check and trigger pending agent timers."""
+        while self._state is AgentRuntimeState.RUNNING:
+            try:
+                await self._check_and_trigger_timers()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error in scheduler loop: {e}")
+
+            try:
+                await asyncio.sleep(5.0)
+            except asyncio.CancelledError:
+                break
+
+    async def _check_and_trigger_timers(self) -> None:
+        if not self._session_factory:
+            return
+
+        from datetime import UTC, datetime
+
+        from sqlalchemy import select, update
+
+        from mimic42.integrations.database_models import AgentTimerModel
+
+        now_utc = datetime.now(UTC)
+
+        async with self._session_factory() as db_session:
+            stmt = (
+                select(AgentTimerModel)
+                .where(
+                    AgentTimerModel.agent_id == self.config.agent_id,
+                    AgentTimerModel.status == "pending",
+                    AgentTimerModel.trigger_at <= now_utc,
+                )
+            )
+            result = await db_session.scalars(stmt)
+            due_timers = list(result)
+
+            if not due_timers:
+                return
+
+            for timer in due_timers:
+                timer.status = "running"
+            await db_session.commit()
+
+            for timer in due_timers:
+                try:
+                    trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
+                    await self.trigger_message(
+                        AgentTrigger(
+                            peer=timer.peer,
+                            text=trigger_text,
+                        )
+                    )
+                    timer.status = "succeeded"
+                except Exception as e:
+                    print(f"Error triggering timer {timer.id}: {e}")
+                    timer.status = "failed"
+
+                # Update status
+                async with self._session_factory() as update_session:
+                    await update_session.execute(
+                        update(AgentTimerModel)
+                        .where(AgentTimerModel.id == timer.id)
+                        .values(status=timer.status)
+                    )
+                    await update_session.commit()
+
+
+async def _process_media_and_text(event: object, text: str) -> str:
+    message = getattr(event, "message", None)
+    if not message or not getattr(message, "media", None):
+        return text
+
+    try:
+        from mimic42.integrations.telegram_tools import format_media_object
+        media_id = format_media_object(message)
+        if not media_id:
+            return text
+
+        if media_id.startswith("photo:"):
+            return f"[Фото id={media_id}]" + (f" {text}" if text else "")
+
+        elif media_id.startswith("sticker:"):
+            parts = media_id.split(":")
+            emoji = parts[5] if len(parts) > 5 else ""
+            pack_name = parts[6] if len(parts) > 6 else ""
+            pack_str = f" пак={pack_name}" if pack_name else ""
+            return (
+                f"[Стикер {emoji} id={media_id}{pack_str}]"
+                + (f" {text}" if text else "")
+            )
+
+        elif media_id.startswith(("voice:", "round:")):
+            import os
+            from io import BytesIO
+
+            import httpx
+
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            if not api_key:
+                err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
+                return err_msg + (f" {text}" if text else "")
+
+            buffer = BytesIO()
+            await event.client.download_media(message, file=buffer)
+            file_bytes = buffer.getvalue()
+            if not file_bytes:
+                err_msg = "[Голосовое сообщение (ошибка: файл пустой)]"
+                return err_msg + (f" {text}" if text else "")
+
+            filename = "voice.ogg" if media_id.startswith("voice:") else "video.mp4"
+
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    import base64
+                    audio_b64 = base64.b64encode(file_bytes).decode("utf-8")
+                    payload = {
+                        "model": "openai/whisper-large-v3",
+                        "input_audio": {
+                            "data": audio_b64,
+                            "format": filename.split(".")[-1],
+                        },
+                    }
+                    headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    }
+                    response = await client.post(
+                        "https://openrouter.ai/api/v1/audio/transcriptions",
+                        headers=headers,
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    res_json = response.json()
+                    transcription = res_json.get("text", "")
+                    mtype = (
+                        "Голосовое сообщение"
+                        if media_id.startswith("voice:")
+                        else "Видеосообщение"
+                    )
+                    trans_text = f"[{mtype} (расшифровка: \"{transcription}\")]"
+                    return trans_text + (f" {text}" if text else "")
+            except Exception as e:
+                mtype = (
+                    "Голосовое сообщение"
+                    if media_id.startswith("voice:")
+                    else "Видеосообщение"
+                )
+                return f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else "")
+
+        elif media_id.startswith("doc:"):
+            parts = media_id.split(":")
+            filename = parts[5] if len(parts) > 5 else "file"
+            ext = filename.split(".")[-1].lower() if "." in filename else ""
+
+            allowed_exts = (
+                "docx",
+                "xlsx",
+                "txt",
+                "md",
+                "json",
+                "csv",
+                "xml",
+                "py",
+                "html",
+                "css",
+                "yaml",
+                "yml",
+            )
+            if ext not in allowed_exts and ext != "":
+                return (
+                    f"[Файл name={filename} (этот тип документа нельзя открыть)]"
+                    + (f" {text}" if text else "")
+                )
+
+            from io import BytesIO
+            buffer = BytesIO()
+            await event.client.download_media(message, file=buffer)
+            file_bytes = buffer.getvalue()
+            if not file_bytes:
+                return f"[Файл name={filename} (пустой)]" + (f" {text}" if text else "")
+
+            if ext == "docx":
+                try:
+                    import docx
+                    doc = docx.Document(BytesIO(file_bytes))
+                    paragraphs = [p.text for p in doc.paragraphs]
+                    for table in doc.tables:
+                        for row in table.rows:
+                            row_text = [cell.text for cell in row.cells]
+                            paragraphs.append(" | ".join(row_text))
+                    doc_content = "\n".join(paragraphs)
+                    doc_text = f"[Файл name={filename} (содержимое: \"{doc_content}\")]"
+                    return doc_text + (f" {text}" if text else "")
+                except Exception as e:
+                    err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
+                    return err_msg + (f" {text}" if text else "")
+
+            elif ext == "xlsx":
+                try:
+                    import openpyxl
+                    wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True)
+                    sheet_texts = []
+                    for sheet in wb.worksheets:
+                        sheet_texts.append(f"Лист: {sheet.title}")
+                        for row in sheet.iter_rows(values_only=True):
+                            row_str = " | ".join(str(val) if val is not None else "" for val in row)
+                            if row_str.strip(" |"):
+                                sheet_texts.append(row_str)
+                    xlsx_content = "\n".join(sheet_texts)
+                    xlsx_text = f"[Файл name={filename} (содержимое: \"{xlsx_content}\")]"
+                    return xlsx_text + (f" {text}" if text else "")
+                except Exception as e:
+                    err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
+                    return err_msg + (f" {text}" if text else "")
+
+            else:
+                try:
+                    txt_content = file_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        txt_content = file_bytes.decode("latin-1")
+                    except Exception as e:
+                        txt_content = f"<Ошибка декодирования: {e}>"
+
+                txt_text = f"[Файл name={filename} (содержимое: \"{txt_content}\")]"
+                return txt_text + (f" {text}" if text else "")
+
+    except Exception:
+        pass
+
+    return text
 
 
 def _extract_response_text(response: object) -> str:
@@ -260,20 +654,61 @@ def _extract_message_id(message: object) -> str | None:
 
 
 def _extract_incoming_text(event: object) -> str:
-    value = getattr(event, "raw_text", None) or getattr(event, "text", None)
-    if isinstance(value, str):
-        return value
-    return ""
+    text = getattr(event, "raw_text", None) or getattr(event, "text", None)
+    if not isinstance(text, str):
+        text = ""
+        
+    message = getattr(event, "message", None)
+    if message and getattr(message, "media", None):
+        try:
+            from mimic42.integrations.telegram_tools import format_media_object
+            media_id = format_media_object(message)
+            if media_id:
+                if media_id.startswith("photo:"):
+                    text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
+                elif media_id.startswith("sticker:"):
+                    parts = media_id.split(":")
+                    emoji = parts[5] if len(parts) > 5 else ""
+                    pack_name = parts[6] if len(parts) > 6 else ""
+                    pack_str = f" пак={pack_name}" if pack_name else ""
+                    text = (
+                        f"[Стикер {emoji} id={media_id}{pack_str}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("voice:"):
+                    text = (
+                        f"[Голосовое сообщение id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("round:"):
+                    text = (
+                        f"[Видеосообщение id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+                elif media_id.startswith("doc:"):
+                    parts = media_id.split(":")
+                    filename = parts[5] if len(parts) > 5 else "file"
+                    text = (
+                        f"[Файл name={filename} id={media_id}]"
+                        + (f" {text}" if text else "")
+                    )
+        except Exception:
+            pass
+            
+    return text
 
 
 async def _extract_incoming_peer(event: object) -> str:
-    get_chat = getattr(event, "get_chat", None)
-    if callable(get_chat):
-        chat = await get_chat()
-        return str(chat)
     chat_id = getattr(event, "chat_id", None)
     if chat_id is not None:
         return str(chat_id)
+    get_chat = getattr(event, "get_chat", None)
+    if callable(get_chat):
+        chat = await get_chat()
+        if chat:
+            cid = getattr(chat, "id", None)
+            if cid is not None:
+                return str(cid)
     peer_id = getattr(event, "peer_id", None)
     if peer_id is not None:
         return str(peer_id)

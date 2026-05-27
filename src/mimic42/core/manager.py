@@ -6,6 +6,8 @@ from collections.abc import Callable
 from typing import cast
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentRuntimeState,
@@ -45,11 +47,13 @@ class AgentManager:
         memory_service_factory: MemoryServiceFactory | None = None,
         config_loader: ConfigLoader | None = None,
         status_sink: StatusSink | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
         self._config_loader = config_loader
         self._status_sink = status_sink
+        self.session_factory = session_factory
         self._agents: dict[UUID, MimicAgentRuntime] = {}
         self._lock = asyncio.Lock()
 
@@ -62,11 +66,17 @@ class AgentManager:
         async with self._lock:
             if config.agent_id in self._agents:
                 raise ValueError(f"Agent {config.agent_id} already exists")
-            runtime = (
-                self._build_runtime_with_memory(config)
-                if self._memory_service_factory is not None
-                else self._runtime_factory(config)
-            )
+            if self._memory_service_factory is not None:
+                runtime = self._build_runtime_with_memory(config)
+            else:
+                sig = inspect.signature(self._runtime_factory)
+                if "session_factory" in sig.parameters:
+                    runtime = self._runtime_factory(
+                        config,
+                        session_factory=self.session_factory,
+                    )
+                else:
+                    runtime = self._runtime_factory(config)
             self._agents[config.agent_id] = runtime
 
         if start:
@@ -123,9 +133,14 @@ class AgentManager:
             telegram_client=telegram_client,
             langchain_agent=build_langchain_agent(
                 config,
-                tools=build_telegram_langchain_tools(cast(TelethonRequestClient, telegram_client)),
+                tools=build_telegram_langchain_tools(
+                    cast(TelethonRequestClient, telegram_client),
+                    agent_id=config.agent_id,
+                    session_factory=self.session_factory,
+                ),
             ),
             memory_service=memory_service,
+            session_factory=self.session_factory,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
@@ -134,15 +149,23 @@ class AgentManager:
         await _await_result(self._status_sink(agent_id, state))
 
 
-def _build_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
+def _build_runtime(
+    config: AgentRuntimeConfig,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> MimicAgentRuntime:
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
         langchain_agent=build_langchain_agent(
             config,
-            tools=build_telegram_langchain_tools(cast(TelethonRequestClient, telegram_client)),
+            tools=build_telegram_langchain_tools(
+                cast(TelethonRequestClient, telegram_client),
+                agent_id=config.agent_id,
+                session_factory=session_factory,
+            ),
         ),
+        session_factory=session_factory,
     )
 
 

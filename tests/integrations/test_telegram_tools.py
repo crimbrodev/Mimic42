@@ -1,51 +1,918 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
+from unittest.mock import MagicMock
+
 import pytest
 from telethon import functions, types
 
-from mimic42.integrations.telegram_tools import TelegramToolbox, build_telegram_langchain_tools
+from mimic42.core.agent_runtime import _extract_incoming_text
+from mimic42.integrations.telegram_tools import (
+    CustomMarkdown,
+    TelegramToolbox,
+    build_telegram_langchain_tools,
+    format_media_object,
+    parse_media_id,
+)
 
 
-class FakeTelethonCallableClient:
+class FakeTelethonClient:
     def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
         self.requests: list[object] = []
 
-    async def __call__(self, request: object) -> bool:
+    async def __call__(self, request: object) -> Any:
         self.requests.append(request)
+        if isinstance(request, functions.users.GetFullUserRequest):
+            full_user = MagicMock(spec=types.UserFull)
+            full_user.id = 123
+            full_user.about = "This is a bio"
+            full_user.common_chats_count = 5
+
+            user_obj = MagicMock(spec=types.User)
+            user_obj.id = 123
+            user_obj.first_name = "Ivan"
+            user_obj.last_name = "Petrov"
+            user_obj.username = "ivan_petrov"
+
+            res = MagicMock(spec=types.users.UserFull)
+            res.full_user = full_user
+            res.chats = []
+            res.users = [user_obj]
+            return res
+        elif isinstance(request, functions.channels.GetFullChannelRequest):
+            full_chat = MagicMock(spec=types.ChannelFull)
+            full_chat.about = "Group description"
+            full_chat.participants_count = 100
+            full_chat.admins_count = 5
+
+            chat_obj = MagicMock(spec=types.Channel)
+            chat_obj.id = 456
+            chat_obj.title = "Test Group"
+            chat_obj.username = "test_group"
+
+            res = MagicMock(spec=types.messages.ChatFull)
+            res.full_chat = full_chat
+            res.chats = [chat_obj]
+            res.users = []
+            return res
+        elif isinstance(request, functions.channels.GetParticipantRequest):
+            participant = MagicMock(spec=types.ChannelParticipantAdmin)
+            participant.user_id = 123
+            participant.title = "Moderator"
+
+            res = MagicMock(spec=types.channels.ChannelParticipant)
+            res.participant = participant
+            res.chats = []
+            res.users = []
+            return res
+        elif isinstance(request, functions.messages.GetCommonChatsRequest):
+            chat = MagicMock(spec=types.Channel)
+            chat.id = 789
+            chat.title = "Common Group"
+            chat.username = "common_group"
+
+            res = MagicMock(spec=types.messages.Chats)
+            res.chats = [chat]
+            return res
+        elif isinstance(request, functions.messages.GetAllStickersRequest):
+            sticker_set = MagicMock(spec=types.StickerSet)
+            sticker_set.id = 111
+            sticker_set.access_hash = 222
+            sticker_set.title = "Pepe"
+            sticker_set.short_name = "pepe"
+            sticker_set.count = 10
+
+            res = MagicMock(spec=types.messages.AllStickers)
+            res.hash = 0
+            res.sets = [sticker_set]
+            return res
+        elif isinstance(request, functions.messages.GetStickerSetRequest):
+            doc = MagicMock(spec=types.Document)
+            doc.id = 333
+            doc.access_hash = 444
+            doc.file_reference = b"\x09"
+            doc.dc_id = 1
+            sticker_attr = MagicMock(spec=types.DocumentAttributeSticker)
+            sticker_attr.alt = "🔥"
+            sticker_attr.stickerset = MagicMock(spec=types.InputStickerSetEmpty)
+            doc.attributes = [sticker_attr]
+
+            res = MagicMock(spec=types.messages.StickerSet)
+            res.documents = [doc]
+            return res
+        elif isinstance(request, functions.messages.SearchStickerSetsRequest):
+            sticker_set = MagicMock(spec=types.StickerSet)
+            sticker_set.id = 111
+            sticker_set.access_hash = 222
+            sticker_set.title = "Pepe"
+            sticker_set.short_name = "pepe"
+            sticker_set.count = 10
+
+            res = MagicMock(spec=types.messages.FoundStickerSets)
+            res.sets = [sticker_set]
+            return res
+        elif isinstance(request, functions.contacts.GetContactsRequest):
+            user = MagicMock(spec=types.User)
+            user.id = 123
+            user.first_name = "Ivan"
+            user.last_name = "Petrov"
+            user.username = "ivan_petrov"
+            user.phone = "12345"
+
+            res = MagicMock(spec=types.contacts.Contacts)
+            res.users = [user]
+            return res
+        elif isinstance(request, functions.messages.GetMessageReactionsListRequest):
+            reaction = MagicMock(spec=types.MessagePeerReaction)
+            reaction.peer_id = types.PeerUser(user_id=123)
+            reaction.reaction = types.ReactionEmoji(emoticon="👍")
+
+            res = MagicMock(spec=types.messages.MessageReactionsList)
+            res.reactions = [reaction]
+            return res
         return True
 
+    async def get_entity(self, peer: Any) -> Any:
+        self.calls.append(("get_entity", {"peer": peer}))
+        if peer == "username":
+            user = MagicMock(spec=types.User)
+            user.id = 123
+            user.first_name = "Ivan"
+            user.last_name = "Petrov"
+            user.username = "ivan_petrov"
+            user.phone = "12345"
+            user.bot = False
+            user.status = MagicMock(spec=types.UserStatusOnline)
+            return user
+        elif peer == "group":
+            channel = MagicMock(spec=types.Channel)
+            channel.id = 456
+            channel.title = "Test Group"
+            channel.username = "test_group"
+            channel.megagroup = True
+            return channel
+        user = MagicMock(spec=types.User)
+        user.id = 123
+        user.first_name = "Ivan"
+        user.last_name = None
+        user.username = None
+        user.phone = None
+        user.bot = False
+        user.status = None
+        return user
+
+    async def get_input_entity(self, peer: Any) -> Any:
+        self.calls.append(("get_input_entity", {"peer": peer}))
+        return MagicMock(spec=types.InputPeerUser)
+
+    async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+        self.calls.append(
+            ("send_file", {"entity": entity, "file": file, "kwargs": kwargs})
+        )
+        msg = MagicMock(spec=types.Message)
+        msg.id = 999
+        return msg
+
+    async def send_message(self, entity: Any, message: str, **kwargs: Any) -> Any:
+        self.calls.append(
+            ("send_message", {"entity": entity, "message": message, "kwargs": kwargs})
+        )
+        msg = MagicMock(spec=types.Message)
+        msg.id = 888
+        return msg
+
+    async def edit_message(self, entity: Any, message: Any, text: str, **kwargs: Any) -> Any:
+        self.calls.append(
+            ("edit_message", {"entity": entity, "message": message, "text": text, "kwargs": kwargs})
+        )
+        msg = MagicMock(spec=types.Message)
+        msg.id = 777
+        return msg
+
+    async def delete_messages(self, entity: Any, message_ids: list[int], **kwargs: Any) -> Any:
+        self.calls.append(
+            ("delete_messages", {"entity": entity, "message_ids": message_ids, "kwargs": kwargs})
+        )
+        return True
+
+    async def forward_messages(
+        self, entity: Any, messages: list[int], from_peer: Any, **kwargs: Any
+    ) -> Any:
+        self.calls.append(
+            (
+                "forward_messages",
+                {"entity": entity, "messages": messages, "from_peer": from_peer, "kwargs": kwargs},
+            )
+        )
+        return True
+
+    async def pin_message(self, entity: Any, message: Any, **kwargs: Any) -> Any:
+        self.calls.append(("pin_message", {"entity": entity, "message": message, "kwargs": kwargs}))
+        return True
+
+    async def unpin_message(self, entity: Any, message: Any, **kwargs: Any) -> Any:
+        self.calls.append(
+            ("unpin_message", {"entity": entity, "message": message, "kwargs": kwargs})
+        )
+        return True
+
+    async def delete_dialog(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("delete_dialog", {"entity": entity, "kwargs": kwargs}))
+        return True
+
+    async def edit_permissions(self, entity: Any, user: Any, **kwargs: Any) -> Any:
+        self.calls.append(
+            ("edit_permissions", {"entity": entity, "user": user, "kwargs": kwargs})
+        )
+        return True
+
+    async def edit_admin(self, entity: Any, user: Any, **kwargs: Any) -> Any:
+        self.calls.append(("edit_admin", {"entity": entity, "user": user, "kwargs": kwargs}))
+        return True
+
+    async def kick_participant(self, entity: Any, user: Any) -> Any:
+        self.calls.append(("kick_participant", {"entity": entity, "user": user}))
+        return True
+
+    async def upload_file(self, file: Any, **kwargs: Any) -> Any:
+        self.calls.append(("upload_file", {"file": file, "kwargs": kwargs}))
+        return MagicMock()
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        self.calls.append(("download_media", {"message": message, "file": file, "kwargs": kwargs}))
+        if file is bytes:
+            return b"fake_image_data"
+        return "fake_path"
+
+    async def get_permissions(self, entity: Any, user: Any) -> Any:
+        self.calls.append(("get_permissions", {"entity": entity, "user": user}))
+
+        class FakePermissions:
+            is_admin = True
+            is_creator = False
+            pin_messages = True
+            delete_messages = True
+            edit_messages = False
+            invite_users = True
+            ban_users = True
+            change_info = False
+            post_messages = False
+            add_admins = False
+
+        return FakePermissions()
+
+    def action(self, entity: Any, action_obj: Any) -> Any:
+        self.calls.append(("action", {"entity": entity, "action_obj": action_obj}))
+
+        class AsyncContext:
+            async def __aenter__(self) -> None:
+                pass
+
+            async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+                pass
+
+        return AsyncContext()
+
+    def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("iter_messages", {"entity": entity, "kwargs": kwargs}))
+
+        async def gen() -> Any:
+            msg = MagicMock(spec=types.Message)
+            msg.id = 777
+            msg.sender_id = 123
+            msg.date = datetime.now()
+            msg.text = "Mock message text"
+            msg.media = None
+            yield msg
+
+        return gen()
+
+    def iter_admin_log(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("iter_admin_log", {"entity": entity, "kwargs": kwargs}))
+
+        async def gen() -> Any:
+            event = MagicMock()
+            event.id = 888
+            event.date = datetime.now()
+            event.user_id = 123
+            event.action = MagicMock()
+            event.action.stringify.return_value = "MockAction"
+            yield event
+
+        return gen()
+
+    def iter_participants(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("iter_participants", {"entity": entity, "kwargs": kwargs}))
+
+        async def gen() -> Any:
+            user = MagicMock(spec=types.User)
+            user.id = 123
+            user.first_name = "Ivan"
+            user.last_name = "Petrov"
+            user.username = None
+            user.bot = False
+
+            participant = MagicMock(spec=types.ChannelParticipantAdmin)
+            participant.title = "AdminTag"
+            user.participant = participant
+            yield user
+
+        return gen()
+
+    async def get_dialogs(self, limit: int = 20) -> list[Any]:
+        self.calls.append(("get_dialogs", {"limit": limit}))
+        dialog = MagicMock()
+        dialog.id = 456
+        dialog.title = "Test Group"
+        dialog.unread_count = 0
+        dialog.entity = MagicMock()
+        dialog.entity.username = "test_group"
+        return [dialog]
+
+
+
+def test_custom_markdown_parser() -> None:
+    text = "Hello [👍](emoji/123456) World"
+    parsed, entities = CustomMarkdown.parse(text)
+
+    assert parsed == "Hello 👍 World"
+    assert len(entities) == 1
+    assert isinstance(entities[0], types.MessageEntityCustomEmoji)
+    assert entities[0].document_id == 123456
+
+    # Test reverse (unparse)
+    restored = CustomMarkdown.unparse(parsed, entities)
+    assert restored == "Hello [👍](emoji/123456) World"
+
+
+def test_format_media_object() -> None:
+    photo = MagicMock(spec=types.Photo)
+    photo.id = 123
+    photo.access_hash = 456
+    photo.file_reference = b"\x01\x02"
+    photo.dc_id = 2
+
+    media = MagicMock(spec=types.MessageMediaPhoto)
+    media.photo = photo
+
+    msg = MagicMock(spec=types.Message)
+    msg.id = 1
+    msg.media = media
+    media_id = format_media_object(msg)
+    assert media_id == "photo:123:456:0102:2"
+
+    parsed = parse_media_id(media_id)
+    assert parsed == ("photo", 123, 456, b"\x01\x02", 2)
+
+
+def test_extract_incoming_text_media() -> None:
+    photo = MagicMock(spec=types.Photo)
+    photo.id = 123
+    photo.access_hash = 456
+    photo.file_reference = b"\x01\x02"
+    photo.dc_id = 2
+
+    media = MagicMock(spec=types.MessageMediaPhoto)
+    media.photo = photo
+
+    msg = MagicMock(spec=types.Message)
+    msg.id = 1
+    msg.media = media
+
+    event = MagicMock()
+    event.raw_text = "Look at this"
+    event.text = "Look at this"
+    event.message = msg
+
+    extracted = _extract_incoming_text(event)
+    assert "[Фото id=photo:123:456:0102:2]" in extracted
+    assert "Look at this" in extracted
+
 
 @pytest.mark.asyncio
-async def test_set_reaction_sends_telethon_reaction_request() -> None:
-    client = FakeTelethonCallableClient()
+async def test_get_profile() -> None:
+    client = FakeTelethonClient()
     toolbox = TelegramToolbox(client)
 
-    result = await toolbox.set_reaction(peer="username", message_id=42, emoji="👍")
-
-    assert result is True
-    assert len(client.requests) == 1
-    request = client.requests[0]
-    assert isinstance(request, functions.messages.SendReactionRequest)
-    assert request.peer == "username"
-    assert request.msg_id == 42
-    assert request.big is False
-    assert request.add_to_recent is True
-    assert request.reaction == [types.ReactionEmoji(emoticon="👍")]
+    profile = await toolbox.get_profile("username")
+    assert profile["id"] == 123
+    assert profile["first_name"] == "Ivan"
+    assert profile["bio"] == "This is a bio"
+    assert profile["common_chats_count"] == 5
 
 
 @pytest.mark.asyncio
-async def test_set_reaction_is_exposed_as_langchain_tool() -> None:
-    client = FakeTelethonCallableClient()
+async def test_get_chat_info() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    chat_info = await toolbox.get_chat_info("group")
+    assert chat_info["id"] == 456
+    assert chat_info["title"] == "Test Group"
+    assert chat_info["about"] == "Group description"
+    assert chat_info["participants_count"] == 100
+
+
+@pytest.mark.asyncio
+async def test_check_admin_permissions() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    perms = await toolbox.check_admin_permissions("group")
+    assert perms["is_admin"] is True
+    assert perms["can_pin_messages"] is True
+    assert perms["can_edit_messages"] is False
+
+
+@pytest.mark.asyncio
+async def test_view_image() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    media_id = "photo:123:456:0102:2"
+    result = await toolbox.view_image(media_id)
+    assert len(result) == 1
+    assert result[0]["type"] == "image_url"
+    assert "data:image/jpeg;base64," in result[0]["image_url"]["url"]
+
+
+@pytest.mark.asyncio
+async def test_send_file() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    media_id = "photo:123:456:0102:2"
+    result = await toolbox.send_file("username", media_id, caption="Hello")
+    assert result["success"] is True
+    assert result["message_id"] == 999
+    assert len(client.calls) == 2  # get_input_entity, send_file
+
+
+@pytest.mark.asyncio
+async def test_get_common_chats() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    chats = await toolbox.get_common_chats("username")
+    assert len(chats) == 1
+    assert chats[0]["id"] == 789
+    assert chats[0]["title"] == "Common Group"
+
+
+@pytest.mark.asyncio
+async def test_get_chat_members() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    members = await toolbox.get_chat_members("group")
+    assert len(members) == 1
+    assert members[0]["id"] == 123
+    assert members[0]["first_name"] == "Ivan"
+    assert members[0]["title"] == "AdminTag"
+
+
+@pytest.mark.asyncio
+async def test_tools_exposed_in_langchain() -> None:
+    client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    result = await tools[0].ainvoke(
-        {
-            "peer": "username",
-            "message_id": 42,
-            "emoji": "🔥",
-        }
+    assert len(tools) == 51
+    tool_names = [t.name for t in tools]
+    assert "send_text_message" in tool_names
+    assert "view_image" in tool_names
+    assert "check_admin_permissions" in tool_names
+    assert "transcribe_voice_note" in tool_names
+    assert "read_document_file" in tool_names
+    assert "set_wakeup_timer" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_extract_incoming_text_extended_media() -> None:
+    # 1. Test Sticker with pack name
+    sticker = MagicMock(spec=types.Document)
+    sticker.id = 123
+    sticker.access_hash = 456
+    sticker.file_reference = b"\x01\x02"
+    sticker.dc_id = 2
+
+    sticker_attr = MagicMock(spec=types.DocumentAttributeSticker)
+    sticker_attr.alt = "👍"
+    sticker_attr.stickerset = MagicMock(spec=types.InputStickerSetShortName)
+    sticker_attr.stickerset.short_name = "pepe_pack"
+    sticker.attributes = [sticker_attr]
+
+    media_sticker = MagicMock(spec=types.MessageMediaDocument)
+    media_sticker.document = sticker
+
+    msg_sticker = MagicMock(spec=types.Message)
+    msg_sticker.id = 1
+    msg_sticker.media = media_sticker
+
+    event_sticker = MagicMock()
+    event_sticker.raw_text = "Sticker message"
+    event_sticker.text = "Sticker message"
+    event_sticker.message = msg_sticker
+
+    text_sticker = _extract_incoming_text(event_sticker)
+    assert (
+        "[Стикер 👍 id=sticker:123:456:0102:2:👍:pepe_pack пак=pepe_pack]"
+        in text_sticker
     )
 
-    assert tools[0].name == "set_reaction"
-    assert result is True
-    assert len(client.requests) == 1
+    # 2. Test Voice note
+    voice = MagicMock(spec=types.Document)
+    voice.id = 789
+    voice.access_hash = 1011
+    voice.file_reference = b"\x03\x04"
+    voice.dc_id = 3
+
+    voice_attr = MagicMock(spec=types.DocumentAttributeAudio)
+    voice_attr.voice = True
+    voice.attributes = [voice_attr]
+
+    media_voice = MagicMock(spec=types.MessageMediaDocument)
+    media_voice.document = voice
+
+    msg_voice = MagicMock(spec=types.Message)
+    msg_voice.id = 2
+    msg_voice.media = media_voice
+
+    event_voice = MagicMock()
+    event_voice.raw_text = ""
+    event_voice.text = ""
+    event_voice.message = msg_voice
+
+    text_voice = _extract_incoming_text(event_voice)
+    assert "[Голосовое сообщение id=voice:789:1011:0304:3]" in text_voice
+
+    # 3. Test Video note
+    video = MagicMock(spec=types.Document)
+    video.id = 1213
+    video.access_hash = 1415
+    video.file_reference = b"\x05\x06"
+    video.dc_id = 4
+
+    video_attr = MagicMock(spec=types.DocumentAttributeVideo)
+    video_attr.round_message = True
+    video.attributes = [video_attr]
+
+    media_video = MagicMock(spec=types.MessageMediaDocument)
+    media_video.document = video
+
+    msg_video = MagicMock(spec=types.Message)
+    msg_video.id = 3
+    msg_video.media = media_video
+
+    event_video = MagicMock()
+    event_video.raw_text = ""
+    event_video.text = ""
+    event_video.message = msg_video
+
+    text_video = _extract_incoming_text(event_video)
+    assert "[Видеосообщение id=round:1213:1415:0506:4]" in text_video
+
+    # 4. Test File with name
+    doc_file = MagicMock(spec=types.Document)
+    doc_file.id = 1617
+    doc_file.access_hash = 1819
+    doc_file.file_reference = b"\x07\x08"
+    doc_file.dc_id = 5
+
+    filename_attr = MagicMock(spec=types.DocumentAttributeFilename)
+    filename_attr.file_name = "test_doc.pdf"
+    doc_file.attributes = [filename_attr]
+
+    media_doc = MagicMock(spec=types.MessageMediaDocument)
+    media_doc.document = doc_file
+
+    msg_doc = MagicMock(spec=types.Message)
+    msg_doc.id = 4
+    msg_doc.media = media_doc
+
+    event_doc = MagicMock()
+    event_doc.raw_text = "Doc text"
+    event_doc.text = "Doc text"
+    event_doc.message = msg_doc
+
+    text_doc = _extract_incoming_text(event_doc)
+    assert (
+        "[Файл name=test_doc.pdf id=doc:1617:1819:0708:5:test_doc.pdf]"
+        in text_doc
+    )
+
+
+@pytest.mark.asyncio
+async def test_member_tags_caching() -> None:
+    from uuid import uuid4
+
+    from mimic42.core.agent_runtime import (
+        AgentRuntimeConfig,
+        AgentRuntimeState,
+        MimicAgentRuntime,
+    )
+
+    config = AgentRuntimeConfig(
+        agent_id=uuid4(),
+        owner_id=uuid4(),
+        telegram_session_name="test_session",
+        telegram_api_id=123,
+        telegram_api_hash="abc",
+        system_prompt="You are an agent",
+    )
+
+    client = FakeTelethonClient()
+
+    langchain = MagicMock()
+
+    async def mock_ainvoke(input_data: dict[str, object]) -> Any:
+        res = MagicMock()
+        res.content = "Ok"
+        return res
+
+    langchain.ainvoke = mock_ainvoke
+
+    runtime = MimicAgentRuntime(
+        config=config,
+        telegram_client=client,
+        langchain_agent=langchain,
+    )
+    runtime._state = AgentRuntimeState.RUNNING
+
+    event = MagicMock()
+    event.is_group = True
+    event.is_channel = True
+    event.chat_id = 999
+    event.sender_id = 888
+    event.id = 1
+    event.raw_text = "Hello"
+    event.text = "Hello"
+    event.message = None
+    event.client = client
+
+    sender = MagicMock(spec=types.User)
+    sender.first_name = "Alice"
+    sender.last_name = None
+    sender.id = 888
+
+    async def get_sender() -> Any:
+        return sender
+
+    event.get_sender = get_sender
+
+    async def get_chat() -> Any:
+        return "999"
+
+    event.get_chat = get_chat
+
+    # 1. Trigger handler (should fetch from Telegram and cache)
+    await runtime._handle_incoming_message(event)
+    get_participant_requests = [
+        r for r in client.requests
+        if isinstance(r, functions.channels.GetParticipantRequest)
+    ]
+    assert len(get_participant_requests) == 1
+
+    # 2. Trigger handler again (should hit cache, no new calls)
+    await runtime._handle_incoming_message(event)
+    get_participant_requests_2 = [
+        r for r in client.requests
+        if isinstance(r, functions.channels.GetParticipantRequest)
+    ]
+    assert len(get_participant_requests_2) == 1
+
+    # Verify cached title was used in trigger
+    assert (999, 888) in runtime._member_tag_cache
+    cached_title, _ = runtime._member_tag_cache[(999, 888)]
+    assert cached_title == "Moderator"
+
+
+@pytest.mark.asyncio
+async def test_remaining_message_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # send_text_message
+    res_send = await toolbox.send_text_message("group", "Hello")
+    assert res_send["success"] is True
+    assert res_send["message_id"] == 888
+
+    # edit_text_message
+    res = await toolbox.edit_text_message("group", 123, "New text")
+    assert res["success"] is True
+    assert res["message_id"] == 777
+
+    # delete_messages
+    res = await toolbox.delete_messages("group", [123, 456])
+    assert res["success"] is True
+
+    # forward_messages
+    res = await toolbox.forward_messages("from_group", "to_group", [123])
+    assert res["success"] is True
+
+    # pin_message
+    res = await toolbox.pin_message("group", 123)
+    assert res["success"] is True
+
+    # unpin_message
+    res = await toolbox.unpin_message("group", 123)
+    assert res["success"] is True
+
+    # unpin_all_messages
+    res = await toolbox.unpin_all_messages("group")
+    assert res["success"] is True
+
+    # send_chat_action
+    res = await toolbox.send_chat_action("group", "record_audio")
+    assert res["success"] is True
+
+    # send_reaction
+    res = await toolbox.send_reaction("group", 123, "👍")
+    assert res["success"] is True
+
+    # get_message_reactions
+    res = await toolbox.get_message_reactions("group", 123)
+    assert len(res["reactions"]) == 1
+    assert res["reactions"][0]["emoji"] == "👍"
+
+    # mark_chat_as_read
+    res = await toolbox.mark_chat_as_read("group", 123)
+    assert res["success"] is True
+
+    # get_messages
+    msgs = await toolbox.get_messages("group", limit=5)
+    assert len(msgs) == 1
+    assert msgs[0]["id"] == 777
+
+
+@pytest.mark.asyncio
+async def test_remaining_navigation_and_dialog_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # get_dialogs
+    res = await toolbox.get_dialogs(limit=5)
+    assert len(res) == 1
+    assert res[0]["id"] == 456
+
+    # search_messages
+    res = await toolbox.search_messages("group", "query")
+    assert len(res) == 1
+    assert res[0]["id"] == 777
+
+    # delete_dialog
+    res = await toolbox.delete_dialog("group")
+    assert res["success"] is True
+
+    # archive_dialogs
+    res = await toolbox.archive_dialogs(["group"])
+    assert res["success"] is True
+
+    # unarchive_dialogs
+    res = await toolbox.unarchive_dialogs(["group"])
+    assert res["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_remaining_media_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # set_profile_photo
+    res = await toolbox.set_profile_photo("photo:123:456:0102:2")
+    assert res["success"] is True
+
+    # send_voice_note
+    res = await toolbox.send_voice_note("group", "voice:123:456:0102:2")
+    assert res["success"] is True
+    assert res["message_id"] == 999
+
+    # send_video_note
+    res = await toolbox.send_video_note("group", "round:123:456:0102:2")
+    assert res["success"] is True
+    assert res["message_id"] == 999
+
+
+@pytest.mark.asyncio
+async def test_remaining_sticker_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # get_sticker_sets
+    res = await toolbox.get_sticker_sets()
+    assert len(res) == 1
+    assert res[0]["short_name"] == "pepe"
+
+    # get_stickers_in_set
+    res = await toolbox.get_stickers_in_set("pepe")
+    assert len(res) == 1
+    assert "sticker:333:444:09:1" in res[0]["media_id"]
+
+    # search_sticker_sets
+    res = await toolbox.search_sticker_sets("pepe")
+    assert len(res) == 1
+    assert res[0]["short_name"] == "pepe"
+
+    # install_sticker_set
+    res = await toolbox.install_sticker_set("pepe")
+    assert res["success"] is True
+
+    # uninstall_sticker_set
+    res = await toolbox.uninstall_sticker_set("pepe")
+    assert res["success"] is True
+
+    # send_sticker
+    res = await toolbox.send_sticker("group", "sticker:123:456:0102:2:emoji:pack")
+    assert res["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_remaining_profile_and_contact_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # update_profile_info
+    res = await toolbox.update_profile_info(first_name="NewName", bio="NewBio")
+    assert res["success"] is True
+
+    # update_username
+    res = await toolbox.update_username("new_username")
+    assert res["success"] is True
+
+    # add_contact
+    res = await toolbox.add_contact("79991234567", "Alice")
+    assert res["success"] is True
+
+    # delete_contact
+    res = await toolbox.delete_contact("username")
+    assert res["success"] is True
+
+    # get_contacts
+    res = await toolbox.get_contacts()
+    assert len(res) == 1
+    assert res[0]["username"] == "ivan_petrov"
+
+
+@pytest.mark.asyncio
+async def test_remaining_group_and_channel_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # create_group
+    res = await toolbox.create_group("GroupTitle", ["username"])
+    assert res["success"] is True
+
+    # create_channel
+    res = await toolbox.create_channel("ChannelTitle")
+    assert res["success"] is True
+
+    # invite_to_channel
+    res = await toolbox.invite_to_channel("channel", ["username"])
+    assert res["success"] is True
+
+    # kick_chat_member
+    res = await toolbox.kick_chat_member("group", "username")
+    assert res["success"] is True
+
+    # ban_chat_member
+    res = await toolbox.ban_chat_member("group", "username")
+    assert res["success"] is True
+
+    # restrict_chat_member
+    res = await toolbox.restrict_chat_member("group", "username")
+    assert res["success"] is True
+
+    # promote_chat_member
+    res = await toolbox.promote_chat_member("group", "username", title="SuperMod")
+    assert res["success"] is True
+
+    # get_chat_admin_log
+    res = await toolbox.get_chat_admin_log("group")
+    assert len(res) == 1
+    assert res[0]["action"] == "MockAction"
+
+    # join_channel
+    res = await toolbox.join_channel("channel")
+    assert res["success"] is True
+
+    # send_poll
+    res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
+    assert res["success"] is True
+    assert res["message_id"] == 999
+
+
+@pytest.mark.asyncio
+async def test_transcribe_and_read_file_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # Test transcribe_voice_note
+    res_trans = await toolbox.transcribe_voice_note("voice:123:456:0102:2")
+    assert res_trans["success"] is True
+    assert "расшифровка" in res_trans["transcription"]
+
+    # Test read_document_file
+    res_read = await toolbox.read_document_file("doc:123:456:0102:2:info.txt")
+    assert res_read["success"] is True
+    assert "содержимое" in res_read["content"]

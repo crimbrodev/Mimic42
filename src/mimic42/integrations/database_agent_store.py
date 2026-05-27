@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
 from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord
-from mimic42.core.onboarding import OnboardingSession
+from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
     AgentMessageModel,
@@ -22,9 +22,11 @@ class DatabaseAgentStore:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
+        cipher: SecretCipher | None = None,
         llm_model: str = "openrouter/free",
     ) -> None:
         self._session_factory = session_factory
+        self._cipher = cipher
         self._llm_model = llm_model
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
@@ -79,8 +81,16 @@ class DatabaseAgentStore:
                 owner_id=agent.owner_id,
                 telegram_session_name=telegram_session.session_name,
                 telegram_api_id=telegram_session.api_id or 0,
-                telegram_api_hash=telegram_session.api_hash_ciphertext or "",
-                telegram_session_string=telegram_session.session_ciphertext,
+                telegram_api_hash=(
+                    self._cipher.decrypt(telegram_session.api_hash_ciphertext)
+                    if self._cipher and telegram_session.api_hash_ciphertext
+                    else telegram_session.api_hash_ciphertext or ""
+                ),
+                telegram_session_string=(
+                    self._cipher.decrypt(telegram_session.session_ciphertext)
+                    if self._cipher and telegram_session.session_ciphertext
+                    else telegram_session.session_ciphertext
+                ),
                 llm_model=self._llm_model,
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
@@ -115,10 +125,12 @@ class DatabaseAgentStore:
             )
             return [
                 AgentMessageRecord(
+                    id=message.id,
                     agent_id=message.agent_id,
                     peer=str(message.payload.get("peer", "")),
                     role=message.role,
                     content=message.content,
+                    direction=message.direction,
                     created_at=message.created_at,
                 )
                 for message in messages
@@ -134,6 +146,7 @@ class DatabaseAgentStore:
             )
             return [
                 AgentActivity(
+                    id=activity.id,
                     agent_id=activity.agent_id,
                     event_type=activity.event_type,
                     status=activity.status,

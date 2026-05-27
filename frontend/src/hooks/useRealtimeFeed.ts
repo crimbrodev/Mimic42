@@ -106,7 +106,7 @@ export function useRealtimeFeed(agentId: string) {
       type: 'message',
       id: m.id,
       timestamp: m.created_at,
-      peer: m.peer,
+      peer: m.peer || (m as any).payload?.peer || '',
       role: m.role,
       content: m.content,
       direction: m.direction ?? undefined,
