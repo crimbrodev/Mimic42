@@ -3,8 +3,10 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from typing import Any, Protocol
+from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import functions, types
 from telethon.extensions import markdown
 
@@ -179,8 +181,28 @@ def format_media_object(msg: Any) -> str | None:
 class TelegramToolbox:
     """High-level business-friendly Telegram tools for the agent."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(
+        self,
+        client: Any,
+        agent_id: UUID | None = None,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
+        # Wrap get_input_entity to automatically resolve numeric string IDs to integers
+        orig_get_input_entity = getattr(client, "get_input_entity", None)
+        if orig_get_input_entity is not None:
+            async def safe_get_input_entity(entity: Any) -> Any:
+                if isinstance(entity, str):
+                    if entity.startswith("-") and entity[1:].isdigit():
+                        entity = int(entity)
+                    elif entity.isdigit():
+                        entity = int(entity)
+                return await orig_get_input_entity(entity)
+            
+            client.get_input_entity = safe_get_input_entity
+
         self._client = client
+        self._agent_id = agent_id
+        self._session_factory = session_factory
 
     # Category 1: Messages and Basic Communication (1-12)
 
@@ -1306,6 +1328,7 @@ class TelegramToolbox:
         self, file_bytes: bytes, filename: str, mime_type: str
     ) -> str:
         """Call OpenRouter audio transcription API (Whisper)."""
+        import base64
         import os
 
         import httpx
@@ -1314,15 +1337,23 @@ class TelegramToolbox:
         if not api_key:
             return "[Ошибка: OPENROUTER_API_KEY не задан в окружении.]"
 
-        files = {"file": (filename, file_bytes, mime_type)}
-        data = {"model": "openai/whisper-large-v3"}
+        audio_b64 = base64.b64encode(file_bytes).decode("utf-8")
+        payload = {
+            "model": "openai/whisper-large-v3",
+            "input_audio": {
+                "data": audio_b64,
+                "format": filename.split(".")[-1],
+            },
+        }
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 "https://openrouter.ai/api/v1/audio/transcriptions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                files=files,
-                data=data,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
             )
             if response.status_code == 200:
                 res_json = response.json()
@@ -1332,12 +1363,52 @@ class TelegramToolbox:
                     f"[Ошибка OpenRouter API (код {response.status_code}): "
                     f"{response.text}]"
                 )
+    async def set_wakeup_timer(
+        self, peer: str, delay_seconds: int, description: str
+    ) -> dict[str, Any]:
+        """Установить таймер пробуждения агента для выполнения отложенной задачи.
+
+        Args:
+            peer: Идентификатор чата, в котором сработает таймер (например, юзернейм или ID).
+            delay_seconds: Задержка в секундах перед срабатыванием таймера.
+            description: Описание задачи для напоминания при пробуждении.
+        """
+        if not self._agent_id or not self._session_factory:
+            return {
+                "success": False,
+                "error": "Database session factory or agent_id not configured",
+            }
+
+        try:
+            from datetime import UTC, datetime, timedelta
+
+            from mimic42.integrations.database_models import AgentTimerModel
+
+            trigger_at = datetime.now(UTC) + timedelta(seconds=delay_seconds)
+
+            async with self._session_factory() as db_session:
+                timer = AgentTimerModel(
+                    agent_id=self._agent_id,
+                    peer=peer,
+                    trigger_at=trigger_at,
+                    description=description,
+                    status="pending",
+                )
+                db_session.add(timer)
+                await db_session.commit()
+
+            return {"success": True, "trigger_at": trigger_at.isoformat()}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
 
-
-def build_telegram_langchain_tools(client: TelethonRequestClient) -> list[BaseTool]:
+def build_telegram_langchain_tools(
+    client: TelethonRequestClient,
+    agent_id: UUID | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> list[BaseTool]:
     """Expose all 50 tools as LangChain StructuredTools."""
-    toolbox = TelegramToolbox(client)
+    toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=session_factory)
 
     return [
         StructuredTool.from_function(
@@ -1601,5 +1672,12 @@ def build_telegram_langchain_tools(client: TelethonRequestClient) -> list[BaseTo
             coroutine=toolbox.read_document_file,
             name="read_document_file",
             description="Read and extract text/contents of a document or file.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_wakeup_timer,
+            name="set_wakeup_timer",
+            description=(
+                "Set a wakeup timer to trigger a delayed task in a chat after a delay in seconds."
+            ),
         ),
     ]

@@ -25,10 +25,13 @@ def build_langchain_agent(
     tools: list[BaseTool] | None = None,
 ) -> LangChainAgentLike:
     model: str | ChatOpenRouter
-    if config.llm_model.startswith("openrouter/"):
+    if config.llm_model.startswith("openrouter/") or "/" in config.llm_model:
         settings = Settings()
+        model_name = config.llm_model
+        if model_name.startswith("openrouter/") and model_name != "openrouter/free":
+            model_name = model_name.replace("openrouter/", "", 1)
         model = ChatOpenRouter(
-            model=config.llm_model,
+            model=model_name,
             api_key=SecretStr(settings.openrouter_api_key)
             if settings.openrouter_api_key is not None
             else None,

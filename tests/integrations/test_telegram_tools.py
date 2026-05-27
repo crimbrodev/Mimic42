@@ -478,13 +478,14 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 50
+    assert len(tools) == 51
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
     assert "check_admin_permissions" in tool_names
     assert "transcribe_voice_note" in tool_names
     assert "read_document_file" in tool_names
+    assert "set_wakeup_timer" in tool_names
 
 
 @pytest.mark.asyncio

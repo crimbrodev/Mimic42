@@ -130,14 +130,15 @@ def create_app(
         if should_build_database:
             database_engine = create_engine(app_settings.database_connection_string)
             session_factory = create_session_factory(database_engine)
-            database_agent_store = agent_store or DatabaseAgentStore(
-                session_factory,
-                llm_model=app_settings.llm_model,
-            )
             cipher = (
                 FernetSecretCipher(app_settings.secret_key)
                 if app_settings.secret_key is not None
                 else None
+            )
+            database_agent_store = agent_store or DatabaseAgentStore(
+                session_factory,
+                cipher=cipher,
+                llm_model=app_settings.llm_model,
             )
             app.state.agent_store = database_agent_store
             if onboarding_service is None:

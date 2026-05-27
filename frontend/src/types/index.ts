@@ -36,14 +36,15 @@ export interface AgentStatus {
  * GET /api/v1/agents/{id}/messages — message record
  */
 export interface AgentMessageRecord {
-  id?: string;
+  id: string;
   agent_id: string;
   peer: string;        // telegram peer id/username
   role: 'user' | 'assistant' | string;
   content: string;
   created_at: string;  // ISO 8601
-  direction?: 'incoming' | 'outgoing';
+  direction?: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string;
   thread_id?: string;
+  payload?: Record<string, any>;
 }
 
 /**
@@ -156,9 +157,10 @@ export interface AgentMessageRow {
   peer: string;
   role: string;
   content: string;
-  direction: 'incoming' | 'outgoing' | null;
+  direction: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string | null;
   thread_id: string | null;
   created_at: string;
+  payload?: Record<string, any>;
 }
 
 /**
