@@ -132,6 +132,26 @@ class FakeTelethonClient:
             res = MagicMock(spec=types.messages.MessageReactionsList)
             res.reactions = [reaction]
             return res
+        elif isinstance(request, functions.messages.GetBotCallbackAnswerRequest):
+            res = MagicMock(spec=types.messages.BotCallbackAnswer)
+            res.message = "Callback answered"
+            res.alert = False
+            res.url = None
+            return res
+        elif isinstance(request, functions.messages.GetInlineBotResultsRequest):
+            inline_result = MagicMock(spec=types.BotInlineResult)
+            inline_result.id = "result_1"
+            inline_result.type = "article"
+            inline_result.title = "Test Result"
+            inline_result.description = "A test inline result"
+            inline_result.url = "https://example.com/article"
+
+            res = MagicMock(spec=types.messages.BotResults)
+            res.query_id = 12345
+            res.results = [inline_result]
+            return res
+        elif isinstance(request, functions.messages.SendInlineBotResultRequest):
+            return True
         return True
 
     async def get_entity(self, peer: Any) -> Any:
@@ -166,6 +186,39 @@ class FakeTelethonClient:
     async def get_input_entity(self, peer: Any) -> Any:
         self.calls.append(("get_input_entity", {"peer": peer}))
         return MagicMock(spec=types.InputPeerUser)
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
+        ids = kwargs.get("ids")
+        msg = MagicMock(spec=types.Message)
+        msg.id = ids if isinstance(ids, int) else 777
+        msg.text = "Mock message text"
+        msg.media = None
+
+        # Build reply_markup for button tests
+        callback_btn = MagicMock(spec=types.KeyboardButtonCallback)
+        callback_btn.text = "Yes"
+        callback_btn.data = b"yes_data"
+
+        url_btn = MagicMock(spec=types.KeyboardButtonUrl)
+        url_btn.text = "Visit"
+        url_btn.url = "https://example.com"
+
+        reply_btn = MagicMock(spec=types.KeyboardButton)
+        reply_btn.text = "Reply"
+
+        row1 = MagicMock()
+        row1.buttons = [callback_btn, url_btn]
+        row2 = MagicMock()
+        row2.buttons = [reply_btn]
+
+        markup = MagicMock(spec=types.ReplyInlineMarkup)
+        markup.rows = [row1, row2]
+        msg.reply_markup = markup
+
+        if ids == 999:
+            return None
+        return msg
 
     async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
         self.calls.append(
@@ -478,7 +531,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 51
+    assert len(tools) == 57
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
@@ -916,3 +969,66 @@ async def test_transcribe_and_read_file_tools() -> None:
     res_read = await toolbox.read_document_file("doc:123:456:0102:2:info.txt")
     assert res_read["success"] is True
     assert "содержимое" in res_read["content"]
+
+
+@pytest.mark.asyncio
+async def test_bot_interaction_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # get_message_buttons
+    res = await toolbox.get_message_buttons("group", 777)
+    assert "buttons" in res
+    assert len(res["buttons"]) == 3
+    assert res["buttons"][0]["text"] == "Yes"
+    assert res["buttons"][0]["type"] != ""
+    assert res["buttons"][0]["data"] == "yes_data"
+    assert res["buttons"][1]["url"] == "https://example.com"
+    assert res["buttons"][2]["type"] != ""
+
+    # get_message_buttons — no buttons
+    res_empty = await toolbox.get_message_buttons("group", 999)
+    assert res_empty["buttons"] == []
+
+    # click_inline_button by button_data
+    res_click = await toolbox.click_inline_button("group", 777, button_data="yes_data")
+    assert res_click["success"] is True
+    assert res_click["message"] == "Callback answered"
+
+    # click_inline_button by button_index
+    res_click_idx = await toolbox.click_inline_button("group", 777, button_index=0)
+    assert res_click_idx["success"] is True
+
+    # click_inline_button invalid index
+    res_click_bad = await toolbox.click_inline_button("group", 777, button_index=10)
+    assert res_click_bad["success"] is False
+    assert "Invalid button index" in res_click_bad["error"]
+
+    # click_reply_keyboard_button
+    res_reply = await toolbox.click_reply_keyboard_button("group", "Reply")
+    assert res_reply["success"] is True
+    assert res_reply["message_id"] == 888
+
+    # query_inline_bot
+    res_inline = await toolbox.query_inline_bot("@testbot", "hello query")
+    assert "error" not in res_inline
+    assert res_inline["query_id"] == 12345
+    assert len(res_inline["results"]) == 1
+    assert res_inline["results"][0]["id"] == "result_1"
+
+    # send_inline_bot_result
+    res_send = await toolbox.send_inline_bot_result("group", 12345, "result_1")
+    assert res_send["success"] is True
+
+    # start_bot without parameter
+    res_start = await toolbox.start_bot("@testbot")
+    assert res_start["success"] is True
+    assert res_start["message_id"] == 888
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert send_calls[-1][1]["message"] == "/start"
+
+    # start_bot with parameter
+    res_start_param = await toolbox.start_bot("@testbot", parameter="ref123", peer="group")
+    assert res_start_param["success"] is True
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert send_calls[-1][1]["message"] == "/start ref123"
