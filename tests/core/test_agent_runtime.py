@@ -539,3 +539,66 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
 
     assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
     assert telegram.sent_messages == [(12345, "should reply")]
+
+
+@pytest.mark.asyncio
+async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
+    class FailingTelegramClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str) -> object:
+            from telethon.errors import ChatAdminRequiredError
+            from telethon.tl.functions.messages import SendMessageRequest
+            req = SendMessageRequest(peer=entity, message=message)
+            raise ChatAdminRequiredError(request=req)
+
+    telegram = FailingTelegramClient()
+    memory = FakeRuntimeMemoryService()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="admin failure reply"),
+        memory_service=memory,
+    )
+
+    await runtime.start()
+    result = await runtime.trigger_message(
+        AgentTrigger(peer="me", text="Try to ping read-only channel")
+    )
+    await runtime.stop()
+
+    assert result.agent_id == runtime.config.agent_id
+    assert result.peer == "me"
+    assert result.response_text == "admin failure reply"
+    assert result.telegram_message_id is None
+    # Verify that it still persisted to memory
+    assert memory.saved_turns == [
+        (runtime.config.agent_id, "me", "Try to ping read-only channel", "admin failure reply")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_incoming_message_handles_exceptions_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    # Monkeypatch trigger_message to raise an error
+    async def mock_trigger_message(self, trigger: Any) -> Any:
+        raise ValueError("Trigger error")
+    monkeypatch.setattr(MimicAgentRuntime, "trigger_message", mock_trigger_message)
+
+    # This should not raise an exception, preventing crash
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()

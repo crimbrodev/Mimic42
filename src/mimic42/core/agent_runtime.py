@@ -181,10 +181,17 @@ class MimicAgentRuntime:
             elif peer_id.isdigit():
                 peer_id = int(peer_id)
                 
-            sent_message = await self._telegram_client.send_message(
-                peer_id,
-                response_text,
-            )
+            sent_message = None
+            try:
+                sent_message = await self._telegram_client.send_message(
+                    peer_id,
+                    response_text,
+                )
+            except Exception as e:
+                import logging
+                logger = logging.getLogger("mimic42.agent_runtime")
+                logger.error(f"Failed to send Telegram message to {peer_id}: {e}")
+
             await self._memory_service.save_turn(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
@@ -244,178 +251,187 @@ class MimicAgentRuntime:
                     input_chat = getattr(event, "input_chat", None)
                 
                 if input_chat is None:
-                    input_chat = await self._telegram_client.get_input_entity(peer)
+                    get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+                    if callable(get_input_entity):
+                        input_chat = await get_input_entity(peer)
                 
-                from telethon import functions, types
-                notify_peer = types.InputNotifyPeer(peer=input_chat)
-                res = await self._telegram_client(functions.account.GetNotifySettingsRequest(peer=notify_peer))
-                
-                is_muted = False
-                if res.silent:
-                    is_muted = True
-                if res.mute_until:
-                    from datetime import datetime
-                    now = datetime.now(res.mute_until.tzinfo) if res.mute_until.tzinfo else datetime.now()
-                    if res.mute_until > now:
+                if input_chat is not None:
+                    from telethon import functions, types
+                    notify_peer = types.InputNotifyPeer(peer=input_chat)
+                    res = await self._telegram_client(functions.account.GetNotifySettingsRequest(peer=notify_peer))
+                    
+                    is_muted = False
+                    if getattr(res, "silent", False):
                         is_muted = True
-                
-                self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
-                
-                if is_muted:
-                    return
+                    if getattr(res, "mute_until", None):
+                        from datetime import datetime
+                        now = datetime.now(res.mute_until.tzinfo) if res.mute_until.tzinfo else datetime.now()
+                        if res.mute_until > now:
+                            is_muted = True
+                    
+                    self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
+                    
+                    if is_muted:
+                        return
         except Exception as e:
             import traceback
             traceback.print_exc()
             pass
 
-        raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
-        if not isinstance(raw_text, str):
-            raw_text = ""
+        # Protect the rest of the message handling pipeline from crashes
+        try:
+            raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
+            if not isinstance(raw_text, str):
+                raw_text = ""
 
-        # Process attachments in memory and transcribers
-        text = await _process_media_and_text(event, raw_text)
-        if not text:
-            return
+            # Process attachments in memory and transcribers
+            text = await _process_media_and_text(event, raw_text)
+            if not text:
+                return
 
-        # Format sender name and metadata
-        is_private = getattr(event, "is_private", False)
-        is_group = getattr(event, "is_group", False)
+            # Format sender name and metadata
+            is_private = getattr(event, "is_private", False)
+            is_group = getattr(event, "is_group", False)
 
-        from datetime import datetime
-        msg_date = getattr(event, "date", None)
-        if not msg_date:
-            message = getattr(event, "message", None)
-            msg_date = getattr(message, "date", None)
-        if not msg_date:
-            msg_date = datetime.now()
-        time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+            from datetime import datetime
+            msg_date = getattr(event, "date", None)
+            if not msg_date:
+                message = getattr(event, "message", None)
+                msg_date = getattr(message, "date", None)
+            if not msg_date:
+                msg_date = datetime.now()
+            time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Chat name
-        if is_private:
-            chat_type_str = "ЛС"
-        else:
-            chat = await event.get_chat()
-            chat_title = getattr(chat, "title", "")
-            if not chat_title:
-                chat_title = (
-                    getattr(chat, "username", "")
-                    or str(getattr(event, "chat_id", ""))
-                )
-            if is_group:
-                chat_type_str = f'Группа "{chat_title}"'
+            # Chat name
+            if is_private:
+                chat_type_str = "ЛС"
             else:
-                chat_type_str = f'Канал "{chat_title}"'
-
-        # Sender details
-        get_sender = getattr(event, "get_sender", None)
-        sender = None
-        if callable(get_sender):
-            try:
-                import inspect
-                res = get_sender()
-                if inspect.isawaitable(res):
-                    sender = await res
+                chat = await event.get_chat()
+                chat_title = getattr(chat, "title", "")
+                if not chat_title:
+                    chat_title = (
+                        getattr(chat, "username", "")
+                        or str(getattr(event, "chat_id", ""))
+                    )
+                if is_group:
+                    chat_type_str = f'Группа "{chat_title}"'
                 else:
-                    sender = res
-            except Exception:
-                pass
-        if sender:
-            first_name = getattr(sender, "first_name", None) or ""
-            last_name = getattr(sender, "last_name", None) or ""
-            name_parts = []
-            if first_name:
-                name_parts.append(first_name)
-            if last_name:
-                name_parts.append(last_name)
-            name_str = " ".join(name_parts)
-            if not name_str:
-                name_str = (
-                    getattr(sender, "title", None)
-                    or getattr(sender, "username", None)
-                    or str(getattr(sender, "id", ""))
-                )
-            if not name_str:
-                name_str = "Unknown"
+                    chat_type_str = f'Канал "{chat_title}"'
 
-            username = getattr(sender, "username", None)
-            username_str = f"@{username}" if username else ""
-            sender_id = getattr(sender, "id", None)
-            id_str = f"ID: {sender_id}" if sender_id else ""
-
-            details = ", ".join(filter(None, [username_str, id_str]))
-            details_str = f" ({details})" if details else ""
-            sender_str = f"{name_str}{details_str}"
-        else:
-            chat = await event.get_chat()
-            chat_title = getattr(chat, "title", "Unknown")
-            sender_str = chat_title
-
-        # Check role/title
-        title = None
-        if getattr(event, "sender_id", None) and getattr(event, "chat_id", None):
-            chat_id = event.chat_id
-            sender_id = event.sender_id
-            cache_key = (chat_id, sender_id)
-            import time
-            now_ts = time.time()
-            if cache_key in self._member_tag_cache:
-                cached_title, expiry = self._member_tag_cache[cache_key]
-                if now_ts < expiry:
-                    title = cached_title
-
-            is_expired = (
-                cache_key not in self._member_tag_cache
-                or now_ts >= self._member_tag_cache[cache_key][1]
-            )
-            if is_expired:
+            # Sender details
+            get_sender = getattr(event, "get_sender", None)
+            sender = None
+            if callable(get_sender):
                 try:
-                    from telethon.tl import functions
-                    is_supergroup = getattr(event, "is_channel", False)
-                    if is_supergroup:
-                        input_chat = getattr(event, "input_chat", None) or chat_id
-                        input_sender = (
-                            getattr(event, "input_sender", None) or sender_id
-                        )
-                        res = await event.client(
-                            functions.channels.GetParticipantRequest(
-                                channel=input_chat,
-                                participant=input_sender,
-                            )
-                        )
-                        title = (
-                            res.participant.title
-                            if hasattr(res.participant, "title")
-                            else None
-                        )
+                    import inspect
+                    res = get_sender()
+                    if inspect.isawaitable(res):
+                        sender = await res
+                    else:
+                        sender = res
                 except Exception:
-                    title = None
-                self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+                    pass
+            if sender:
+                first_name = getattr(sender, "first_name", None) or ""
+                last_name = getattr(sender, "last_name", None) or ""
+                name_parts = []
+                if first_name:
+                    name_parts.append(first_name)
+                if last_name:
+                    name_parts.append(last_name)
+                name_str = " ".join(name_parts)
+                if not name_str:
+                    name_str = (
+                        getattr(sender, "title", None)
+                        or getattr(sender, "username", None)
+                        or str(getattr(sender, "id", ""))
+                    )
+                if not name_str:
+                    name_str = "Unknown"
 
-        # Fallback to channel post author signature
-        post_author = getattr(getattr(event, "message", None), "post_author", None)
-        if not title and post_author:
-            title = post_author
+                username = getattr(sender, "username", None)
+                username_str = f"@{username}" if username else ""
+                sender_id = getattr(sender, "id", None)
+                id_str = f"ID: {sender_id}" if sender_id else ""
 
-        if title:
-            sender_str += f" [Подпись/Роль: {title}]"
+                details = ", ".join(filter(None, [username_str, id_str]))
+                details_str = f" ({details})" if details else ""
+                sender_str = f"{name_str}{details_str}"
+            else:
+                chat = await event.get_chat()
+                chat_title = getattr(chat, "title", "Unknown")
+                sender_str = chat_title
 
-        # Format output message text
-        text = (
-            f"[Входящее сообщение]\n"
-            f"Время: {time_str}\n"
-            f"Чат: {chat_type_str}\n"
-            f"Отправитель: {sender_str}\n"
-            f"Содержимое: {text}"
-        )
+            # Check role/title
+            title = None
+            if getattr(event, "sender_id", None) and getattr(event, "chat_id", None):
+                chat_id = event.chat_id
+                sender_id = event.sender_id
+                cache_key = (chat_id, sender_id)
+                import time
+                now_ts = time.time()
+                if cache_key in self._member_tag_cache:
+                    cached_title, expiry = self._member_tag_cache[cache_key]
+                    if now_ts < expiry:
+                        title = cached_title
 
-        peer = await _extract_incoming_peer(event)
-        await self.trigger_message(
-            AgentTrigger(
-                peer=peer,
-                text=text,
-                message_id=_extract_incoming_message_id(event),
+                is_expired = (
+                    cache_key not in self._member_tag_cache
+                    or now_ts >= self._member_tag_cache[cache_key][1]
+                )
+                if is_expired:
+                    try:
+                        from telethon.tl import functions
+                        is_supergroup = getattr(event, "is_channel", False)
+                        if is_supergroup:
+                            input_chat = getattr(event, "input_chat", None) or chat_id
+                            input_sender = (
+                                getattr(event, "input_sender", None) or sender_id
+                            )
+                            res = await event.client(
+                                functions.channels.GetParticipantRequest(
+                                    channel=input_chat,
+                                    participant=input_sender,
+                                )
+                            )
+                            title = (
+                                res.participant.title
+                                if hasattr(res.participant, "title")
+                                else None
+                            )
+                    except Exception:
+                        title = None
+                    self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+
+            # Fallback to channel post author signature
+            post_author = getattr(getattr(event, "message", None), "post_author", None)
+            if not title and post_author:
+                title = post_author
+
+            if title:
+                sender_str += f" [Подпись/Роль: {title}]"
+
+            # Format output message text
+            text = (
+                f"[Входящее сообщение]\n"
+                f"Время: {time_str}\n"
+                f"Чат: {chat_type_str}\n"
+                f"Отправитель: {sender_str}\n"
+                f"Содержимое: {text}"
             )
-        )
+
+            peer = await _extract_incoming_peer(event)
+            await self.trigger_message(
+                AgentTrigger(
+                    peer=peer,
+                    text=text,
+                    message_id=_extract_incoming_message_id(event),
+                )
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            pass
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
