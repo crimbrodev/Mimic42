@@ -1022,6 +1022,177 @@ class TelegramToolbox:
         except Exception as e:
             return [{"error": str(e)}]
 
+    # Category 7: Bot Interaction (49-55)
+
+    async def get_message_buttons(self, peer: str, message_id: int) -> dict[str, Any]:
+        """Get inline or reply keyboard buttons from a message."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            msg = await self._client.get_messages(entity, ids=message_id)
+            if not msg or not msg.reply_markup:
+                return {"buttons": []}
+            buttons = []
+            for row_idx, row in enumerate(msg.reply_markup.rows):
+                for col_idx, button in enumerate(row.buttons):
+                    btn_info: dict[str, Any] = {
+                        "row": row_idx,
+                        "column": col_idx,
+                        "text": getattr(button, "text", ""),
+                        "type": type(button).__name__,
+                    }
+                    if isinstance(button, types.KeyboardButtonCallback):
+                        btn_info["data"] = (
+                            button.data.decode("utf-8", errors="replace")
+                            if button.data
+                            else None
+                        )
+                    elif isinstance(button, types.KeyboardButtonUrl):
+                        btn_info["url"] = button.url
+                    elif isinstance(button, types.KeyboardButtonSwitchInline):
+                        btn_info["switch_inline_query"] = button.query
+                    elif isinstance(button, types.KeyboardButtonGame):
+                        btn_info["game"] = True
+                    buttons.append(btn_info)
+            return {"buttons": buttons}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def click_inline_button(
+        self,
+        peer: str,
+        message_id: int,
+        button_data: str | None = None,
+        button_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Click an inline callback button on a message."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            data: bytes | None = None
+            if button_data is not None:
+                data = button_data.encode("utf-8")
+            else:
+                msg = await self._client.get_messages(entity, ids=message_id)
+                if not msg or not msg.reply_markup:
+                    return {"success": False, "error": "Message has no buttons"}
+                callback_buttons: list[types.KeyboardButtonCallback] = []
+                for row in msg.reply_markup.rows:
+                    for btn in row.buttons:
+                        if isinstance(btn, types.KeyboardButtonCallback):
+                            callback_buttons.append(btn)
+                if button_index is None or button_index < 0 or button_index >= len(
+                    callback_buttons
+                ):
+                    return {
+                        "success": False,
+                        "error": f"Invalid button index. Total callback buttons: {len(callback_buttons)}",
+                    }
+                data = callback_buttons[button_index].data
+
+            if data is None:
+                return {"success": False, "error": "No button data provided or found"}
+
+            result = await self._client(
+                functions.messages.GetBotCallbackAnswerRequest(
+                    peer=entity,
+                    msg_id=message_id,
+                    data=data,
+                )
+            )
+            return {
+                "success": True,
+                "message": getattr(result, "message", ""),
+                "alert": getattr(result, "alert", False),
+                "url": getattr(result, "url", None),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def click_reply_keyboard_button(
+        self, peer: str, button_text: str
+    ) -> dict[str, Any]:
+        """Press a reply keyboard button by sending its text as a message."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            msg = await self._client.send_message(entity, button_text)
+            return {"success": True, "message_id": msg.id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def query_inline_bot(
+        self, bot_username: str, query: str, peer: str | None = None
+    ) -> dict[str, Any]:
+        """Query an inline bot and return results."""
+        try:
+            bot_entity = await self._client.get_input_entity(bot_username)
+            peer_entity = (
+                await self._client.get_input_entity(peer)
+                if peer
+                else types.InputPeerEmpty()
+            )
+            result = await self._client(
+                functions.messages.GetInlineBotResultsRequest(
+                    bot=bot_entity,
+                    peer=peer_entity,
+                    query=query,
+                    offset="",
+                )
+            )
+            results = []
+            for r in result.results:
+                res_item: dict[str, Any] = {
+                    "id": r.id,
+                    "type": r.type,
+                    "title": getattr(r, "title", None),
+                    "description": getattr(r, "description", None),
+                }
+                if hasattr(r, "url"):
+                    res_item["url"] = r.url
+                results.append(res_item)
+            return {
+                "query_id": result.query_id,
+                "results": results,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def send_inline_bot_result(
+        self,
+        peer: str,
+        query_id: int,
+        result_id: str,
+        reply_to_msg_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Send an inline bot result to a chat."""
+        try:
+            entity = await self._client.get_input_entity(peer)
+            reply_to = None
+            if reply_to_msg_id is not None:
+                reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
+            await self._client(
+                functions.messages.SendInlineBotResultRequest(
+                    peer=entity,
+                    query_id=query_id,
+                    id=result_id,
+                    reply_to=reply_to,
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def start_bot(
+        self, bot_username: str, parameter: str = "", peer: str | None = None
+    ) -> dict[str, Any]:
+        """Start a bot with an optional deep-link parameter."""
+        try:
+            target = peer or bot_username
+            entity = await self._client.get_input_entity(target)
+            start_msg = f"/start {parameter}".strip()
+            msg = await self._client.send_message(entity, start_msg)
+            return {"success": True, "message_id": msg.id}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # Category 6: Groups, Channels and Permissions (36-48)
 
     async def get_chat_info(self, peer: str) -> dict[str, Any]:
@@ -1951,5 +2122,49 @@ def build_telegram_langchain_tools(
             coroutine=toolbox.delete_chat_folder,
             name="delete_chat_folder",
             description="Delete a custom chat folder by its ID.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_message_buttons,
+            name="get_message_buttons",
+            description=(
+                "Get inline or reply keyboard buttons from a message. "
+                "Returns list of buttons with text, type, data, URL, etc."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.click_inline_button,
+            name="click_inline_button",
+            description=(
+                "Click an inline callback button on a message. "
+                "Use button_data (bytes as string) or button_index to identify the button."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.click_reply_keyboard_button,
+            name="click_reply_keyboard_button",
+            description=(
+                "Press a reply keyboard (markup) button by sending its text as a message."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.query_inline_bot,
+            name="query_inline_bot",
+            description=(
+                "Query an inline bot (e.g., @vote query) and return results with query_id."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.send_inline_bot_result,
+            name="send_inline_bot_result",
+            description=(
+                "Send an inline bot result to a chat using query_id and result_id."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.start_bot,
+            name="start_bot",
+            description=(
+                "Start a bot with optional deep-link parameter (e.g., /start ref123)."
+            ),
         ),
     ]
