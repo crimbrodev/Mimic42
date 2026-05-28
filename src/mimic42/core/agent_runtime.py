@@ -173,6 +173,9 @@ class MimicAgentRuntime:
                 }
             )
 
+            # Convert output BaseMessage objects to plain dicts for storage/comparison.
+            output_messages = _messages_to_dicts(response)
+
             # Interpret structured response if provided by the agent. Expected format:
             # { "send_any_message": bool, "text": str, "reply_to": int|str }
             send_any, response_text, reply_to = _interpret_agent_response(response)
@@ -208,11 +211,11 @@ class MimicAgentRuntime:
                     logger = logging.getLogger("mimic42.agent_runtime")
                     logger.error(f"Failed to send Telegram message to {peer_id}: {e}")
 
-            await self._memory_service.save_turn(
+            await self._memory_service.save_messages(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
-                user_text=trigger.text,
-                assistant_text=response_text,
+                input_messages=messages,
+                output_messages=output_messages,
             )
 
         return AgentTriggerResult(
@@ -683,6 +686,31 @@ async def _process_media_and_text(event: object, text: str) -> str:
         pass
 
     return text
+
+
+def _messages_to_dicts(response: object) -> list[dict[str, Any]]:
+    """Extract and normalize the messages list from a LangGraph agent response."""
+    if isinstance(response, Mapping):
+        resp_map = cast("Mapping[str, Any]", response)
+        raw_messages = resp_map.get("messages")
+        if isinstance(raw_messages, list):
+            return [_message_to_dict(m) for m in raw_messages]
+    return []
+
+
+def _message_to_dict(msg: object) -> dict[str, Any]:
+    """Convert a LangChain BaseMessage (or dict) to a normalized dict."""
+    if isinstance(msg, Mapping):
+        return dict(cast("Mapping[str, Any]", msg))
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump()  # type: ignore[no-any-return]
+    # Fallback for plain objects with attributes
+    result: dict[str, Any] = {}
+    for attr in ("type", "role", "content", "tool_calls", "tool_call_id", "id"):
+        val = getattr(msg, attr, None)
+        if val is not None:
+            result[attr] = val
+    return result
 
 
 def _extract_response_text(response: object) -> str:

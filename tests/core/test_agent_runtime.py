@@ -72,7 +72,7 @@ class FakeLangChainAgent:
 
 class FakeRuntimeMemoryService:
     def __init__(self) -> None:
-        self.saved_turns: list[tuple[UUID, str, str, str]] = []
+        self.saved_messages: list[tuple[UUID, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
 
     async def build_messages(
         self,
@@ -80,18 +80,18 @@ class FakeRuntimeMemoryService:
         agent_id: UUID,
         peer: str,
         user_text: str,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         return [{"role": "user", "content": user_text}]
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        input_messages: list[dict[str, Any]],
+        output_messages: list[dict[str, Any]],
     ) -> None:
-        self.saved_turns.append((agent_id, peer, user_text, assistant_text))
+        self.saved_messages.append((agent_id, peer, input_messages, output_messages))
 
 
 class FakeIncomingEvent:
@@ -199,9 +199,13 @@ async def test_trigger_persists_turn_to_memory() -> None:
 
     await runtime.trigger_message(AgentTrigger(peer="chat", text="remember this"))
 
-    assert memory.saved_turns == [
-        (runtime.config.agent_id, "chat", "remember this", "memory reply")
-    ]
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[0] == runtime.config.agent_id
+    assert saved[1] == "chat"
+    # input_messages has the user message, output_messages has the assistant response
+    assert any(m["role"] == "user" and m["content"] == "remember this" for m in saved[2])
+    assert any(m["role"] == "assistant" and m["content"] == "memory reply" for m in saved[3])
 
 
 @pytest.mark.asyncio
@@ -570,9 +574,12 @@ async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
     assert result.response_text == "admin failure reply"
     assert result.telegram_message_id is None
     # Verify that it still persisted to memory
-    assert memory.saved_turns == [
-        (runtime.config.agent_id, "me", "Try to ping read-only channel", "admin failure reply")
-    ]
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[0] == runtime.config.agent_id
+    assert saved[1] == "me"
+    assert any(m["role"] == "user" for m in saved[2])
+    assert any(m["role"] == "assistant" for m in saved[3])
 
 
 @pytest.mark.asyncio

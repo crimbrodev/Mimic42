@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -16,6 +16,7 @@ class MemoryRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    TOOL = "tool"
 
 
 class MemoryMessage(BaseModel):
@@ -33,15 +34,14 @@ class ShortTermMemoryStore(Protocol):
         agent_id: UUID,
         peer: str,
         since: datetime,
-    ) -> list[MemoryMessage]: ...
+    ) -> list[dict[str, Any]]: ...
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        messages: list[dict[str, Any]],
     ) -> None: ...
 
 
@@ -64,15 +64,15 @@ class MemoryServiceLike(Protocol):
         agent_id: UUID,
         peer: str,
         user_text: str,
-    ) -> list[dict[str, str]]: ...
+    ) -> list[dict[str, Any]]: ...
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        input_messages: list[dict[str, Any]],
+        output_messages: list[dict[str, Any]],
     ) -> None: ...
 
 
@@ -100,8 +100,8 @@ class RuntimeMemoryService:
         agent_id: UUID,
         peer: str,
         user_text: str,
-    ) -> list[dict[str, str]]:
-        messages: list[dict[str, str]] = []
+    ) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
         long_term_context = await self._load_long_term_context(agent_id=agent_id, query=user_text)
         if long_term_context:
             messages.append(
@@ -113,41 +113,43 @@ class RuntimeMemoryService:
             )
 
         short_term_messages = await self._load_short_term_context(agent_id=agent_id, peer=peer)
-        messages.extend(
-            {"role": message.role.value, "content": message.content}
-            for message in short_term_messages
-        )
+        messages.extend(short_term_messages)
         messages.append({"role": MemoryRole.USER.value, "content": user_text})
         return self._fit_token_budget(messages)
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        input_messages: list[dict[str, Any]],
+        output_messages: list[dict[str, Any]],
     ) -> None:
-        if self._short_term is not None:
-            await self._short_term.save_turn(
+        new_messages = _extract_new_messages(input_messages, output_messages)
+
+        if self._short_term is not None and new_messages:
+            await self._short_term.save_messages(
                 agent_id=agent_id,
                 peer=peer,
-                user_text=user_text,
-                assistant_text=assistant_text,
+                messages=new_messages,
             )
+
         if self._long_term is not None:
-            await self._long_term.save_turn(
-                agent_id=agent_id,
-                user_text=user_text,
-                assistant_text=assistant_text,
-            )
+            user_text = _extract_last_user_text(output_messages)
+            assistant_text = _extract_last_assistant_text(output_messages)
+            if user_text or assistant_text:
+                await self._long_term.save_turn(
+                    agent_id=agent_id,
+                    user_text=user_text,
+                    assistant_text=assistant_text,
+                )
 
     async def _load_short_term_context(
         self,
         *,
         agent_id: UUID,
         peer: str,
-    ) -> list[MemoryMessage]:
+    ) -> list[dict[str, Any]]:
         if self._short_term is None:
             return []
         since = self._now() - self._short_term_ttl
@@ -162,16 +164,62 @@ class RuntimeMemoryService:
             return []
         return await self._long_term.search(agent_id=agent_id, query=query)
 
-    def _fit_token_budget(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
-        selected_reversed: list[dict[str, str]] = []
+    def _fit_token_budget(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected_reversed: list[dict[str, Any]] = []
         token_total = 0
         for message in reversed(messages):
-            message_tokens = self._token_counter(message["content"])
+            content = message.get("content", "")
+            # Roughly account for tool calls too
+            tool_calls = message.get("tool_calls", [])
+            tool_text = ""
+            for tc in tool_calls:
+                tool_text += tc.get("name", "") + " " + str(tc.get("args", ""))
+            message_tokens = self._token_counter(content + tool_text)
             if selected_reversed and token_total + message_tokens > self._max_context_tokens:
                 break
             selected_reversed.append(message)
             token_total += message_tokens
         return list(reversed(selected_reversed))
+
+
+def _extract_new_messages(
+    input_messages: list[dict[str, Any]],
+    output_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Identify messages generated during this turn (not in input)."""
+    import json
+
+    def _key(msg: dict[str, Any]) -> str:
+        role = msg.get("type", msg.get("role", ""))
+        content = msg.get("content", "")
+        tool_call_id = msg.get("tool_call_id", "")
+        tool_calls = msg.get("tool_calls", [])
+        return json.dumps(
+            [role, content, tool_call_id, tool_calls],
+            sort_keys=True,
+            default=str,
+        )
+
+    input_keys = {_key(m) for m in input_messages}
+    return [m for m in output_messages if _key(m) not in input_keys]
+
+
+def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
+    """Extract the last user message content from the full conversation."""
+    for msg in reversed(messages):
+        role = msg.get("type", msg.get("role", ""))
+        if role in ("human", "user"):
+            return msg.get("content", "")
+    return ""
+
+
+def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:
+    """Extract the last assistant message content (ignoring tool calls)."""
+    for msg in reversed(messages):
+        role = msg.get("type", msg.get("role", ""))
+        if role in ("ai", "assistant"):
+            return msg.get("content", "")
+    return ""
 
 
 def _estimate_tokens(text: str) -> int:
