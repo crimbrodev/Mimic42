@@ -68,7 +68,6 @@ export function useUpdateAgentSettings(agentId: string) {
         .update({
           name: values.name,
           soul_prompt: values.soul_prompt,
-          system_prompt: values.system_prompt,
           settings: values.settings as Json,
           updated_at: new Date().toISOString(),
         })

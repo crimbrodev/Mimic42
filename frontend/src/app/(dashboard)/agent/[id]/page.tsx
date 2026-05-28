@@ -181,7 +181,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const update = useUpdateAgentSettings(agentId);
 
   const [values, setValues] = useState<AgentSettingsValues>({
-    name: '', soul_prompt: '', system_prompt: '',
+    name: '', soul_prompt: '',
   });
   const [formErrors, setFormErrors] = useState<Partial<AgentSettingsValues>>({});
   const [dirty, setDirty] = useState(false);
@@ -191,7 +191,6 @@ function TabSettings({ agentId }: { agentId: string }) {
       setValues({
         name: details.name,
         soul_prompt: details.soul_prompt ?? '',
-        system_prompt: details.system_prompt ?? '',
       });
     }
   }, [details]);

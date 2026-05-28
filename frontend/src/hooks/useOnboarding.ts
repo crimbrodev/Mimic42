@@ -10,11 +10,9 @@ import type {
   OnboardingStep,
   OnboardingPublicStatus,
 } from '@/types';
-import { DEFAULT_SYSTEM_PROMPT } from '@/lib/constants';
 import type {
   AgentNameValues,
   SoulPromptValues,
-  SystemPromptValues,
   TelegramCredentialsValues,
   TelegramCodeValues,
   Telegram2FAValues,
@@ -125,17 +123,6 @@ export function useSaveSoulPrompt() {
   };
 }
 
-/**
- * Step 3: Save system prompt
- */
-export function useSaveSystemPrompt() {
-  const save = useSaveOnboardingStep();
-  return {
-    ...save,
-    mutateAsync: (values: SystemPromptValues) =>
-      save.mutateAsync({ system_prompt: values.system_prompt }),
-  };
-}
 
 /**
  * Step 4a: Start Telegram authorization

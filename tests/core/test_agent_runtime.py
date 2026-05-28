@@ -72,7 +72,7 @@ class FakeLangChainAgent:
 
 class FakeRuntimeMemoryService:
     def __init__(self) -> None:
-        self.saved_turns: list[tuple[UUID, str, str, str]] = []
+        self.saved_messages: list[tuple[UUID, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
 
     async def build_messages(
         self,
@@ -80,18 +80,18 @@ class FakeRuntimeMemoryService:
         agent_id: UUID,
         peer: str,
         user_text: str,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         return [{"role": "user", "content": user_text}]
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        input_messages: list[dict[str, Any]],
+        output_messages: list[dict[str, Any]],
     ) -> None:
-        self.saved_turns.append((agent_id, peer, user_text, assistant_text))
+        self.saved_messages.append((agent_id, peer, input_messages, output_messages))
 
 
 class FakeIncomingEvent:
@@ -199,9 +199,13 @@ async def test_trigger_persists_turn_to_memory() -> None:
 
     await runtime.trigger_message(AgentTrigger(peer="chat", text="remember this"))
 
-    assert memory.saved_turns == [
-        (runtime.config.agent_id, "chat", "remember this", "memory reply")
-    ]
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[0] == runtime.config.agent_id
+    assert saved[1] == "chat"
+    # input_messages has the user message, output_messages has the assistant response
+    assert any(m["role"] == "user" and m["content"] == "remember this" for m in saved[2])
+    assert any(m["role"] == "assistant" and m["content"] == "memory reply" for m in saved[3])
 
 
 @pytest.mark.asyncio
@@ -453,3 +457,155 @@ async def test_set_wakeup_timer_tool_and_scheduler() -> None:
     assert telegram.sent_messages[0] == (12345, "timer triggered reply")
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+    from telethon.tl import functions
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = True
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="should not reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 0  # type: ignore
+    assert len(telegram.sent_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+    from telethon.tl import functions
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = False
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="should reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    assert telegram.sent_messages == [(12345, "should reply")]
+
+
+@pytest.mark.asyncio
+async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
+    class FailingTelegramClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str) -> object:
+            from telethon.errors import ChatAdminRequiredError
+            from telethon.tl.functions.messages import SendMessageRequest
+            req = SendMessageRequest(peer=entity, message=message)
+            raise ChatAdminRequiredError(request=req)
+
+    telegram = FailingTelegramClient()
+    memory = FakeRuntimeMemoryService()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="admin failure reply"),
+        memory_service=memory,
+    )
+
+    await runtime.start()
+    result = await runtime.trigger_message(
+        AgentTrigger(peer="me", text="Try to ping read-only channel")
+    )
+    await runtime.stop()
+
+    assert result.agent_id == runtime.config.agent_id
+    assert result.peer == "me"
+    assert result.response_text == "admin failure reply"
+    assert result.telegram_message_id is None
+    # Verify that it still persisted to memory
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[0] == runtime.config.agent_id
+    assert saved[1] == "me"
+    assert any(m["role"] == "user" for m in saved[2])
+    assert any(m["role"] == "assistant" for m in saved[3])
+
+
+@pytest.mark.asyncio
+async def test_handle_incoming_message_handles_exceptions_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    # Monkeypatch trigger_message to raise an error
+    async def mock_trigger_message(self, trigger: Any) -> Any:
+        raise ValueError("Trigger error")
+    monkeypatch.setattr(MimicAgentRuntime, "trigger_message", mock_trigger_message)
+
+    # This should not raise an exception, preventing crash
+    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
+    await telegram.emit_message(event)
+
+    await runtime.stop()

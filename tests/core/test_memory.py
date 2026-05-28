@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,8 +15,8 @@ from mimic42.core.memory import (
 
 class FakeShortTermMemory:
     def __init__(self, messages: list[MemoryMessage]) -> None:
-        self.messages = messages
-        self.saved_turns: list[tuple[object, str, str, str]] = []
+        self._messages = messages
+        self.saved_messages: list[list[dict[str, Any]]] = []
 
     async def load_recent_messages(
         self,
@@ -23,22 +24,23 @@ class FakeShortTermMemory:
         agent_id: UUID,
         peer: str,
         since: datetime,
-    ) -> list[MemoryMessage]:
+    ) -> list[dict[str, Any]]:
         return [
-            message
-            for message in self.messages
-            if message.agent_id == agent_id and message.peer == peer and message.created_at >= since
+            {"role": message.role.value, "content": message.content}
+            for message in self._messages
+            if message.agent_id == agent_id
+            and message.peer == peer
+            and message.created_at >= since
         ]
 
-    async def save_turn(
+    async def save_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
-        user_text: str,
-        assistant_text: str,
+        messages: list[dict[str, Any]],
     ) -> None:
-        self.saved_turns.append((agent_id, peer, user_text, assistant_text))
+        self.saved_messages.append(messages)
 
 
 class FakeLongTermMemory:
@@ -145,12 +147,19 @@ async def test_memory_service_saves_turn_to_short_and_long_term() -> None:
     long_term = FakeLongTermMemory()
     service = RuntimeMemoryService(short_term=short_term, long_term=long_term)
 
-    await service.save_turn(
+    input_msgs = [{"role": "user", "content": "hello"}]
+    output_msgs = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    await service.save_messages(
         agent_id=agent_id,
         peer="chat",
-        user_text="hello",
-        assistant_text="hi",
+        input_messages=input_msgs,
+        output_messages=output_msgs,
     )
 
-    assert short_term.saved_turns == [(agent_id, "chat", "hello", "hi")]
+    # Only the new message (assistant) should be saved to short-term
+    assert len(short_term.saved_messages) == 1
+    assert short_term.saved_messages[0] == [{"role": "assistant", "content": "hi"}]
     assert long_term.saved == [(str(agent_id), "hello", "hi")]

@@ -109,7 +109,6 @@ export interface TelegramCodeInput {
 export interface FinalizeAgentInput {
   name: string;
   soul_prompt: string;
-  system_prompt: string;
 }
 
 /**
@@ -142,7 +141,6 @@ export interface AgentRow {
   name: string;
   state: AgentState;
   soul_prompt: string | null;
-  system_prompt: string | null;
   settings: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
@@ -225,7 +223,6 @@ export interface OnboardingSessionRow {
   owner_id: string;
   agent_name: string | null;
   soul_prompt: string | null;
-  system_prompt: string | null;
   authorization_status: OnboardingAuthorizationStatus;
   phone_number: string | null;
   completed_agent_id: string | null;
@@ -348,7 +345,6 @@ export interface ThreadAnalytics {
 export interface AgentSettingsForm {
   name: string;
   soul_prompt: string;
-  system_prompt: string;
   settings: Record<string, unknown>;
 }
 
