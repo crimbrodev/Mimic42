@@ -61,6 +61,9 @@ class Mem0LongTermMemory:
             return result
         return []
 
+    async def clear_all_memories(self, agent_id: UUID) -> None:
+        await self._client.delete_all(user_id=str(agent_id))
+
 
 def build_mem0_memory(api_key: str | None) -> Mem0LongTermMemory | None:
     if not api_key:

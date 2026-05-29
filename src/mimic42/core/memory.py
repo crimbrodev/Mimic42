@@ -180,19 +180,30 @@ class RuntimeMemoryService:
     async def _load_long_term_context(self, *, agent_id: UUID, query: str) -> list[str]:
         if self._long_term is None:
             return []
-        return await self._long_term.search(agent_id=agent_id, query=query)
+        try:
+            return await self._long_term.search(agent_id=agent_id, query=query)
+        except Exception:
+            import logging
+            logger = logging.getLogger("mimic42.memory")
+            logger.warning("Failed to search long-term memory", exc_info=True)
+            return []
 
     def _fit_token_budget(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         selected_reversed: list[dict[str, Any]] = []
         token_total = 0
         for message in reversed(messages):
             content = message.get("content", "")
+            if isinstance(content, list):
+                import json
+                content_str = json.dumps(content, ensure_ascii=False)
+            else:
+                content_str = str(content)
             # Roughly account for tool calls too
             tool_calls = message.get("tool_calls", [])
             tool_text = ""
             for tc in tool_calls:
                 tool_text += tc.get("name", "") + " " + str(tc.get("args", ""))
-            message_tokens = self._token_counter(content + tool_text)
+            message_tokens = self._token_counter(content_str + tool_text)
             if selected_reversed and token_total + message_tokens > self._max_context_tokens:
                 break
             selected_reversed.append(message)
