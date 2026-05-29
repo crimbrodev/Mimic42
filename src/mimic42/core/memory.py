@@ -193,12 +193,17 @@ class RuntimeMemoryService:
         token_total = 0
         for message in reversed(messages):
             content = message.get("content", "")
+            if isinstance(content, list):
+                import json
+                content_str = json.dumps(content, ensure_ascii=False)
+            else:
+                content_str = str(content)
             # Roughly account for tool calls too
             tool_calls = message.get("tool_calls", [])
             tool_text = ""
             for tc in tool_calls:
                 tool_text += tc.get("name", "") + " " + str(tc.get("args", ""))
-            message_tokens = self._token_counter(content + tool_text)
+            message_tokens = self._token_counter(content_str + tool_text)
             if selected_reversed and token_total + message_tokens > self._max_context_tokens:
                 break
             selected_reversed.append(message)
