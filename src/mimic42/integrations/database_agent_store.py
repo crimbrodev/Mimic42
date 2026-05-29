@@ -94,6 +94,7 @@ class DatabaseAgentStore:
                 llm_model=self._llm_model,
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
+                name=agent.name,
             )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:

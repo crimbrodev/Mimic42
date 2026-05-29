@@ -97,6 +97,7 @@ class InMemoryAgentStore:
             telegram_session_string=session.session_secret,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
+            name=session.name or "AI",
         )
         return record
 

@@ -302,6 +302,7 @@ class AgentOnboardingService:
             llm_model=self._llm_model,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
+            name=session.name or "AI",
         )
 
 

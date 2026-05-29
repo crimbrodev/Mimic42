@@ -38,12 +38,14 @@ class AgentRuntimeConfig(BaseModel):
     llm_model: str = Field(default="mistralai/mistral-small-2603", min_length=1)
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
+    name: str = Field(default="AI", min_length=1, max_length=120)
 
     @property
     def combined_prompt(self) -> str:
-        if not self.soul_prompt:
-            return self.system_prompt
-        return f"{self.system_prompt}\n\nSOUL.md:\n{self.soul_prompt}"
+        prompt = self.system_prompt
+        prompt = prompt.replace("{{name}}", self.name)
+        prompt = prompt.replace("{{soul}}", self.soul_prompt)
+        return prompt
 
 
 class AgentStatus(BaseModel):

@@ -889,3 +889,16 @@ async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     assert len(cancel_requests) >= 2
     await runtime.stop()
+
+def test_combined_prompt() -> None:
+    config = AgentRuntimeConfig(
+        agent_id=UUID("00000000-0000-0000-0000-000000000000"),
+        owner_id=UUID("00000000-0000-0000-0000-000000000000"),
+        telegram_session_name="test",
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        system_prompt="Hello {{name}}, you are {{soul}}",
+        name="Bob",
+        soul_prompt="kind",
+    )
+    assert config.combined_prompt == "Hello Bob, you are kind"
