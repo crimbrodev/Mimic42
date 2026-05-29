@@ -261,6 +261,9 @@ class MimicAgentRuntime:
                 )
             else:
                 sent_message = await self._telegram_client.send_message(peer, text)
+        except Exception:
+            logger.exception("Failed to send message in _humanized_send")
+            sent_message = None
         finally:
             # Cancel typing
             try:
