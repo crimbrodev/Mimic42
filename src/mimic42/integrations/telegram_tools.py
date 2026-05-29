@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -135,17 +136,12 @@ def format_media_object(msg: Any) -> str | None:
                 elif isinstance(sticker_attr.stickerset, types.InputStickerSetID):
                     pack_name = str(sticker_attr.stickerset.id)
                 return (
-                    f"sticker:{doc.id}:{doc.access_hash}:{ref_hex}:{doc.dc_id}:"
-                    f"{emoji}:{pack_name}"
+                    f"sticker:{doc.id}:{doc.access_hash}:{ref_hex}:{doc.dc_id}:{emoji}:{pack_name}"
                 )
 
             # Check for voice note
             audio_attr = next(
-                (
-                    attr
-                    for attr in doc.attributes
-                    if isinstance(attr, types.DocumentAttributeAudio)
-                ),
+                (attr for attr in doc.attributes if isinstance(attr, types.DocumentAttributeAudio)),
                 None,
             )
             if audio_attr and audio_attr.voice:
@@ -153,11 +149,7 @@ def format_media_object(msg: Any) -> str | None:
 
             # Check for round video note
             video_attr = next(
-                (
-                    attr
-                    for attr in doc.attributes
-                    if isinstance(attr, types.DocumentAttributeVideo)
-                ),
+                (attr for attr in doc.attributes if isinstance(attr, types.DocumentAttributeVideo)),
                 None,
             )
             if video_attr and video_attr.round_message:
@@ -263,7 +255,7 @@ class TelegramToolbox:
             orig_func = getattr(self._client, "get_input_entity", None)
         else:
             orig_func = getattr(self._client, "get_entity", None)
-            
+
         if orig_func is not None:
             try:
                 return await orig_func(peer)
@@ -540,14 +532,13 @@ class TelegramToolbox:
             if duration_hours is not None:
                 until = datetime.now() + timedelta(hours=duration_hours)
             else:
-                until = datetime.now() + timedelta(days=365 * 10)  # 10 years (safe from 32-bit epoch overflow)
+                until = datetime.now() + timedelta(
+                    days=365 * 10
+                )  # 10 years (safe from 32-bit epoch overflow)
             await self._client(
                 functions.account.UpdateNotifySettingsRequest(
                     peer=notify_peer,
-                    settings=types.InputPeerNotifySettings(
-                        mute_until=until,
-                        silent=True
-                    )
+                    settings=types.InputPeerNotifySettings(mute_until=until, silent=True),
                 )
             )
             return {"success": True}
@@ -563,9 +554,8 @@ class TelegramToolbox:
                 functions.account.UpdateNotifySettingsRequest(
                     peer=notify_peer,
                     settings=types.InputPeerNotifySettings(
-                        mute_until=datetime(1970, 1, 1),
-                        silent=False
-                    )
+                        mute_until=datetime(1970, 1, 1), silent=False
+                    ),
                 )
             )
             return {"success": True}
@@ -804,7 +794,7 @@ class TelegramToolbox:
                 entity,
                 types.InputMediaGeoPoint(
                     geo_point=types.InputGeoPoint(lat=latitude, long=longitude)
-                )
+                ),
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -824,8 +814,8 @@ class TelegramToolbox:
                     address=address,
                     provider="",
                     venue_id="",
-                    venue_type=""
-                )
+                    venue_type="",
+                ),
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -840,7 +830,7 @@ class TelegramToolbox:
             import urllib.request
 
             url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
             def _fetch():
                 with urllib.request.urlopen(req) as resp:
@@ -859,7 +849,7 @@ class TelegramToolbox:
                 "success": True,
                 "latitude": location["y"],
                 "longitude": location["x"],
-                "address": address
+                "address": address,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1115,9 +1105,7 @@ class TelegramToolbox:
                     }
                     if isinstance(button, types.KeyboardButtonCallback):
                         btn_info["data"] = (
-                            button.data.decode("utf-8", errors="replace")
-                            if button.data
-                            else None
+                            button.data.decode("utf-8", errors="replace") if button.data else None
                         )
                     elif isinstance(button, types.KeyboardButtonUrl):
                         btn_info["url"] = button.url
@@ -1152,8 +1140,10 @@ class TelegramToolbox:
                     for btn in row.buttons:
                         if isinstance(btn, types.KeyboardButtonCallback):
                             callback_buttons.append(btn)
-                if button_index is None or button_index < 0 or button_index >= len(
-                    callback_buttons
+                if (
+                    button_index is None
+                    or button_index < 0
+                    or button_index >= len(callback_buttons)
                 ):
                     return {
                         "success": False,
@@ -1180,9 +1170,7 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def click_reply_keyboard_button(
-        self, peer: str, button_text: str
-    ) -> dict[str, Any]:
+    async def click_reply_keyboard_button(self, peer: str, button_text: str) -> dict[str, Any]:
         """Press a reply keyboard button by sending its text as a message."""
         try:
             entity = await self._resolve_peer(peer)
@@ -1197,11 +1185,7 @@ class TelegramToolbox:
         """Query an inline bot and return results."""
         try:
             bot_entity = await self._resolve_peer(bot_username)
-            peer_entity = (
-                await self._resolve_peer(peer)
-                if peer
-                else types.InputPeerEmpty()
-            )
+            peer_entity = await self._resolve_peer(peer) if peer else types.InputPeerEmpty()
             result = await self._client(
                 functions.messages.GetInlineBotResultsRequest(
                     bot=bot_entity,
@@ -1479,6 +1463,271 @@ class TelegramToolbox:
         except Exception as e:
             return [{"error": str(e)}]
 
+    async def edit_chat_title(self, peer: str, title: str) -> dict[str, Any]:
+        """Change the title of a channel, group or supergroup."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(functions.channels.EditTitleRequest(channel=entity, title=title))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def edit_chat_about(self, peer: str, about: str) -> dict[str, Any]:
+        """Change the about/description of a channel, group or supergroup."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(functions.messages.EditChatAboutRequest(peer=entity, about=about))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def edit_chat_photo(self, peer: str, photo: str) -> dict[str, Any]:
+        """Change the photo of a channel, group or supergroup. photo can be a file path or URL."""
+        try:
+            entity = await self._resolve_peer(peer)
+            # Handle URL download if needed
+            photo_path = photo
+            if photo.startswith("http://") or photo.startswith("https://"):
+                import aiohttp
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(photo) as resp:
+                        if resp.status != 200:
+                            return {
+                                "success": False,
+                                "error": f"Failed to download photo: HTTP {resp.status}",
+                            }
+                        data = await resp.read()
+                        import tempfile
+
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+                            f.write(data)
+                            photo_path = f.name
+
+            uploaded = await self._client.upload_file(photo_path)
+            await self._client(functions.channels.EditPhotoRequest(channel=entity, photo=uploaded))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_chat_public_link(self, peer: str, username: str) -> dict[str, Any]:
+        """Set or change the public username/link of a channel or supergroup.
+        Pass empty string to remove."""
+        try:
+            entity = await self._resolve_peer(peer)
+            result = await self._client(
+                functions.channels.UpdateUsernameRequest(channel=entity, username=username)
+            )
+            return {"success": bool(result)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def set_chat_default_banned_rights(self, peer: str, rights: str) -> dict[str, Any]:
+        """Set default restricted rights for all members of a group/channel.
+        rights is a JSON string mapping flag names to true/false.
+        Example: '{\"send_messages\": true, \"send_media\": true}'
+        Available flags: view_messages, send_messages, send_media, send_stickers,
+        send_gifs, send_games, send_inline, embed_links, send_polls, change_info,
+        invite_users, pin_messages, manage_topics, send_photos, send_videos,
+        send_roundvideos, send_audios, send_voices, send_docs, send_plain."""
+        try:
+            entity = await self._resolve_peer(peer)
+            rights_dict = json.loads(rights) if isinstance(rights, str) else rights
+            banned = types.ChatBannedRights(**rights_dict)
+            await self._client(
+                functions.messages.EditChatDefaultBannedRightsRequest(
+                    peer=entity, banned_rights=banned
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_chat_signatures(
+        self, peer: str, signatures_enabled: bool, profiles_enabled: bool = True
+    ) -> dict[str, Any]:
+        """Toggle message signatures in a channel (shows admin name on posts)."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleSignaturesRequest(
+                    channel=entity,
+                    signatures_enabled=signatures_enabled,
+                    profiles_enabled=profiles_enabled,
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def delete_channel(self, peer: str) -> dict[str, Any]:
+        """Delete a channel or supergroup entirely."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(functions.channels.DeleteChannelRequest(channel=entity))
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_join_requests(self, peer: str, enabled: bool) -> dict[str, Any]:
+        """Enable or disable join requests (approval required to join)."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleJoinRequestRequest(channel=entity, enabled=enabled)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_join_to_send(self, peer: str, enabled: bool) -> dict[str, Any]:
+        """Enable or disable the requirement to join the channel before sending messages."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleJoinToSendRequest(channel=entity, enabled=enabled)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_slow_mode(self, peer: str, seconds: int) -> dict[str, Any]:
+        """Enable or disable slow mode in a group.
+        seconds can be 0 (off), 10, 30, 60, 300, 900, 3600."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleSlowModeRequest(channel=entity, seconds=seconds)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def set_discussion_group(self, broadcast: str, group: str) -> dict[str, Any]:
+        """Link a discussion group (supergroup) to a broadcast channel."""
+        try:
+            broadcast_entity = await self._resolve_peer(broadcast)
+            group_entity = await self._resolve_peer(group)
+            result = await self._client(
+                functions.channels.SetDiscussionGroupRequest(
+                    broadcast=broadcast_entity, group=group_entity
+                )
+            )
+            return {"success": bool(result)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_forum(self, peer: str, enabled: bool, tabs: bool = False) -> dict[str, Any]:
+        """Enable or disable forum mode in a supergroup (creates topics)."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleForumRequest(channel=entity, enabled=enabled, tabs=tabs)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_pre_history_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
+        """Hide or show previous chat history for new members."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.TogglePreHistoryHiddenRequest(channel=entity, enabled=enabled)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_participants_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
+        """Hide or show the list of participants in a channel/group."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleParticipantsHiddenRequest(channel=entity, enabled=enabled)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def edit_chat_location(
+        self, peer: str, latitude: float, longitude: float, address: str
+    ) -> dict[str, Any]:
+        """Set a geolocation for a group/channel (appears in info)."""
+        try:
+            entity = await self._resolve_peer(peer)
+            geo_point = types.InputGeoPoint(lat=latitude, long=longitude)
+            result = await self._client(
+                functions.channels.EditLocationRequest(
+                    channel=entity, geo_point=geo_point, address=address
+                )
+            )
+            return {"success": bool(result)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def toggle_anti_spam(self, peer: str, enabled: bool) -> dict[str, Any]:
+        """Enable or disable native Telegram anti-spam protection in a group."""
+        try:
+            entity = await self._resolve_peer(peer)
+            await self._client(
+                functions.channels.ToggleAntiSpamRequest(channel=entity, enabled=enabled)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def set_chat_admin_rights(
+        self, peer: str, user: str, rights: str, title: str | None = None
+    ) -> dict[str, Any]:
+        """Set full admin rights for a user in a channel/group.
+        rights is a JSON string mapping flag names to true/false.
+        Example: '{\"post_messages\": true, \"delete_messages\": true, \"add_admins\": true}'
+        Available flags: change_info, post_messages, edit_messages, delete_messages,
+        ban_users, invite_users, pin_messages, add_admins, anonymous, manage_call,
+        other, manage_topics, post_stories, edit_stories, delete_stories,
+        manage_direct_messages, manage_ranks."""
+        try:
+            entity = await self._resolve_peer(peer)
+            user_entity = await self._resolve_peer(user)
+            rights_dict = json.loads(rights) if isinstance(rights, str) else rights
+            admin_rights = types.ChatAdminRights(**rights_dict)
+            await self._client(
+                functions.channels.EditAdminRequest(
+                    channel=entity, user_id=user_entity, admin_rights=admin_rights, rank=title
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def set_chat_banned_rights(
+        self, peer: str, user: str, rights: str, until_date: int | None = None
+    ) -> dict[str, Any]:
+        """Set full banned/restricted rights for a user in a channel/group.
+        rights is a JSON string mapping flag names to true/false.
+        Example: '{\"send_messages\": true, \"send_media\": true}'
+        Available flags: view_messages, send_messages, send_media, send_stickers,
+        send_gifs, send_games, send_inline, embed_links, send_polls, change_info,
+        invite_users, pin_messages, manage_topics, send_photos, send_videos,
+        send_roundvideos, send_audios, send_voices, send_docs, send_plain, edit_rank.
+        until_date is Unix timestamp for when the restriction expires."""
+        try:
+            entity = await self._resolve_peer(peer)
+            user_entity = await self._resolve_peer(user)
+            rights_dict = json.loads(rights) if isinstance(rights, str) else rights
+            if until_date is not None:
+                rights_dict["until_date"] = datetime.fromtimestamp(until_date)
+            banned = types.ChatBannedRights(**rights_dict)
+            await self._client(
+                functions.channels.EditBannedRequest(
+                    channel=entity, participant=user_entity, banned_rights=banned
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def join_channel(self, channel: str) -> dict[str, Any]:
         """Join a public channel/group."""
         try:
@@ -1654,6 +1903,7 @@ class TelegramToolbox:
         import io
 
         import docx
+
         doc = docx.Document(io.BytesIO(file_bytes))
         paragraphs = [p.text for p in doc.paragraphs]
         for table in doc.tables:
@@ -1666,6 +1916,7 @@ class TelegramToolbox:
         import io
 
         import openpyxl
+
         wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
         sheets_text = []
         for sheet in wb.worksheets:
@@ -1713,10 +1964,8 @@ class TelegramToolbox:
                 res_json = response.json()
                 return str(res_json.get("text", ""))
             else:
-                return (
-                    f"[Ошибка OpenRouter API (код {response.status_code}): "
-                    f"{response.text}]"
-                )
+                return f"[Ошибка OpenRouter API (код {response.status_code}): {response.text}]"
+
     async def set_wakeup_timer(
         self, peer: str, delay_seconds: int, description: str
     ) -> dict[str, Any]:
@@ -1765,7 +2014,10 @@ class TelegramToolbox:
             return {"type": "channel", "id": getattr(peer, "channel_id", None)}
         elif isinstance(peer, (types.InputPeerChat, types.PeerChat)):
             return {"type": "chat", "id": getattr(peer, "chat_id", None)}
-        return {"type": "unknown", "id": getattr(peer, "id", None) or getattr(peer, "peer_id", None)}
+        return {
+            "type": "unknown",
+            "id": getattr(peer, "id", None) or getattr(peer, "peer_id", None),
+        }
 
     async def get_chat_folders(self) -> list[dict[str, Any]]:
         """Get user's chat folders (dialog filters)."""
@@ -1775,29 +2027,33 @@ class TelegramToolbox:
             filters = res.filters if hasattr(res, "filters") else res
             for f in filters:
                 if isinstance(f, types.DialogFilter):
-                    folders.append({
-                        "id": f.id,
-                        "title": f.title.text if hasattr(f.title, "text") else str(f.title),
-                        "emoticon": f.emoticon,
-                        "color": f.color,
-                        "pinned_peers": [self._serialize_peer(p) for p in (f.pinned_peers or [])],
-                        "include_peers": [self._serialize_peer(p) for p in (f.include_peers or [])],
-                        "exclude_peers": [self._serialize_peer(p) for p in (f.exclude_peers or [])],
-                        "contacts": bool(f.contacts),
-                        "non_contacts": bool(f.non_contacts),
-                        "groups": bool(f.groups),
-                        "broadcasts": bool(f.broadcasts),
-                        "bots": bool(f.bots),
-                        "exclude_muted": bool(f.exclude_muted),
-                        "exclude_read": bool(f.exclude_read),
-                        "exclude_archived": bool(f.exclude_archived),
-                    })
+                    folders.append(
+                        {
+                            "id": f.id,
+                            "title": f.title.text if hasattr(f.title, "text") else str(f.title),
+                            "emoticon": f.emoticon,
+                            "color": f.color,
+                            "pinned_peers": [
+                                self._serialize_peer(p) for p in (f.pinned_peers or [])
+                            ],
+                            "include_peers": [
+                                self._serialize_peer(p) for p in (f.include_peers or [])
+                            ],
+                            "exclude_peers": [
+                                self._serialize_peer(p) for p in (f.exclude_peers or [])
+                            ],
+                            "contacts": bool(f.contacts),
+                            "non_contacts": bool(f.non_contacts),
+                            "groups": bool(f.groups),
+                            "broadcasts": bool(f.broadcasts),
+                            "bots": bool(f.bots),
+                            "exclude_muted": bool(f.exclude_muted),
+                            "exclude_read": bool(f.exclude_read),
+                            "exclude_archived": bool(f.exclude_archived),
+                        }
+                    )
                 elif isinstance(f, types.DialogFilterDefault):
-                    folders.append({
-                        "id": 0,
-                        "title": "All Chats",
-                        "type": "default"
-                    })
+                    folders.append({"id": 0, "title": "All Chats", "type": "default"})
             return folders
         except Exception as e:
             return [{"error": str(e)}]
@@ -1822,6 +2078,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Create or update a custom chat folder (dialog filter)."""
         try:
+
             async def resolve_peers(peer_list):
                 if not peer_list:
                     return []
@@ -1857,10 +2114,7 @@ class TelegramToolbox:
             )
 
             await self._client(
-                functions.messages.UpdateDialogFilterRequest(
-                    id=folder_id,
-                    filter=folder
-                )
+                functions.messages.UpdateDialogFilterRequest(id=folder_id, filter=folder)
             )
             return {"success": True}
         except Exception as e:
@@ -1870,10 +2124,7 @@ class TelegramToolbox:
         """Delete a chat folder by its ID."""
         try:
             await self._client(
-                functions.messages.UpdateDialogFilterRequest(
-                    id=folder_id,
-                    filter=None
-                )
+                functions.messages.UpdateDialogFilterRequest(id=folder_id, filter=None)
             )
             return {"success": True}
         except Exception as e:
@@ -1887,9 +2138,7 @@ class TelegramToolbox:
             key_cls = _PRIVACY_KEY_MAP.get(key)
             if not key_cls:
                 return {"error": f"Unknown privacy key: {key}"}
-            result = await self._client(
-                functions.account.GetPrivacyRequest(key=key_cls())
-            )
+            result = await self._client(functions.account.GetPrivacyRequest(key=key_cls()))
             rules = []
             for rule in result.rules:
                 if isinstance(rule, types.PrivacyValueAllowAll):
@@ -1961,9 +2210,7 @@ class TelegramToolbox:
     async def get_global_settings(self) -> dict[str, Any]:
         """Get global privacy settings."""
         try:
-            res = await self._client(
-                functions.account.GetGlobalPrivacySettingsRequest()
-            )
+            res = await self._client(functions.account.GetGlobalPrivacySettingsRequest())
             return {
                 "archive_and_mute_new_noncontact_peers": bool(
                     res.archive_and_mute_new_noncontact_peers
@@ -1999,9 +2246,7 @@ class TelegramToolbox:
                 new_noncontact_peers_require_premium=new_noncontact_peers_require_premium,
                 display_gifts_button=display_gifts_button,
             )
-            await self._client(
-                functions.account.SetGlobalPrivacySettingsRequest(settings=settings)
-            )
+            await self._client(functions.account.SetGlobalPrivacySettingsRequest(settings=settings))
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -2021,9 +2266,7 @@ class TelegramToolbox:
         """Enable or disable sensitive content filter."""
         try:
             await self._client(
-                functions.account.SetContentSettingsRequest(
-                    sensitive_enabled=sensitive_enabled
-                )
+                functions.account.SetContentSettingsRequest(sensitive_enabled=sensitive_enabled)
             )
             return {"success": True}
         except Exception as e:
@@ -2035,7 +2278,7 @@ def build_telegram_langchain_tools(
     agent_id: UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> list[BaseTool]:
-    """Expose all 71 tools as LangChain StructuredTools."""
+    """Expose all 89 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=session_factory)
 
     return [
@@ -2227,8 +2470,7 @@ def build_telegram_langchain_tools(
             coroutine=toolbox.get_chat_info,
             name="get_chat_info",
             description=(
-                "Get high-level details of a group/channel "
-                "(about, title, participants count)."
+                "Get high-level details of a group/channel (about, title, participants count)."
             ),
         ),
         StructuredTool.from_function(
@@ -2280,6 +2522,117 @@ def build_telegram_langchain_tools(
             coroutine=toolbox.get_chat_admin_log,
             name="get_chat_admin_log",
             description="Get administrative audit log.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.edit_chat_title,
+            name="edit_chat_title",
+            description="Change the title of a channel, group or supergroup.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.edit_chat_about,
+            name="edit_chat_about",
+            description="Change the about/description of a channel, group or supergroup.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.edit_chat_photo,
+            name="edit_chat_photo",
+            description=(
+                "Change the photo of a channel, group or supergroup. "
+                "photo can be a file path or URL."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.update_chat_public_link,
+            name="update_chat_public_link",
+            description=(
+                "Set or change the public username/link of a channel or supergroup. "
+                "Pass empty string to remove."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_chat_default_banned_rights,
+            name="set_chat_default_banned_rights",
+            description=(
+                "Set default restricted rights for all members of a group/channel. "
+                "rights is a JSON string mapping flag names to true/false."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_chat_signatures,
+            name="toggle_chat_signatures",
+            description="Toggle message signatures in a channel (shows admin name on posts).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.delete_channel,
+            name="delete_channel",
+            description="Delete a channel or supergroup entirely.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_join_requests,
+            name="toggle_join_requests",
+            description="Enable or disable join requests (approval required to join).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_join_to_send,
+            name="toggle_join_to_send",
+            description=(
+                "Enable or disable the requirement to join the channel "
+                "before sending messages."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_slow_mode,
+            name="toggle_slow_mode",
+            description=(
+                "Enable or disable slow mode in a group. "
+                "seconds can be 0 (off), 10, 30, 60, 300, 900, 3600."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_discussion_group,
+            name="set_discussion_group",
+            description="Link a discussion group (supergroup) to a broadcast channel.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_forum,
+            name="toggle_forum",
+            description="Enable or disable forum mode in a supergroup (creates topics).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_pre_history_hidden,
+            name="toggle_pre_history_hidden",
+            description="Hide or show previous chat history for new members.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_participants_hidden,
+            name="toggle_participants_hidden",
+            description="Hide or show the list of participants in a channel/group.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.edit_chat_location,
+            name="edit_chat_location",
+            description="Set a geolocation for a group/channel (appears in info).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.toggle_anti_spam,
+            name="toggle_anti_spam",
+            description="Enable or disable native Telegram anti-spam protection in a group.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_chat_admin_rights,
+            name="set_chat_admin_rights",
+            description=(
+                "Set full admin rights for a user in a channel/group. "
+                "rights is a JSON string mapping flag names to true/false."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_chat_banned_rights,
+            name="set_chat_banned_rights",
+            description=(
+                "Set full banned/restricted rights for a user in a channel/group. "
+                "rights is a JSON string mapping flag names to true/false."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.join_channel,
@@ -2382,16 +2735,12 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_inline_bot_result,
             name="send_inline_bot_result",
-            description=(
-                "Send an inline bot result to a chat using query_id and result_id."
-            ),
+            description=("Send an inline bot result to a chat using query_id and result_id."),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.start_bot,
             name="start_bot",
-            description=(
-                "Start a bot with optional deep-link parameter (e.g., /start ref123)."
-            ),
+            description=("Start a bot with optional deep-link parameter (e.g., /start ref123)."),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_privacy_settings,
