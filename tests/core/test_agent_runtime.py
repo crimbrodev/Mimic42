@@ -39,9 +39,15 @@ class FakeTelegramClient:
     async def is_user_authorized(self) -> bool:
         return self.authorized
 
-    async def send_message(self, entity: str, message: str) -> object:
-        self.sent_messages.append((entity, message))
-        return {"id": len(self.sent_messages), "entity": entity, "message": message}
+    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        self.sent_messages.append((str(entity), message))
+        return {"id": len(self.sent_messages), "entity": str(entity), "message": message}
+
+    async def __call__(self, request: object) -> object:
+        if not hasattr(self, "requests"):
+            self.requests = []
+        self.requests.append(request)
+        return {}
 
     def add_event_handler(
         self,
@@ -94,15 +100,41 @@ class FakeRuntimeMemoryService:
         self.saved_messages.append((agent_id, peer, input_messages, output_messages))
 
 
+class FakeReplyTo:
+    def __init__(self, reply_to_msg_id: int) -> None:
+        self.reply_to_msg_id = reply_to_msg_id
+
+
+class FakeIncomingMessage:
+    def __init__(self, *, reply_to_msg_id: int | None = None) -> None:
+        self.reply_to = FakeReplyTo(reply_to_msg_id) if reply_to_msg_id else None
+
+
 class FakeIncomingEvent:
-    def __init__(self, *, chat_id: int = 10, message_id: int = 42, text: str = "hello") -> None:
+    def __init__(
+        self,
+        *,
+        chat_id: int = 10,
+        message_id: int = 42,
+        text: str = "hello",
+        reply_to_msg_id: int | None = None,
+    ) -> None:
         self.chat_id = chat_id
         self.id = message_id
         self.raw_text = text
         self.is_private = True
+        self.message = FakeIncomingMessage(reply_to_msg_id=reply_to_msg_id)
 
     async def get_chat(self) -> str:
         return f"chat:{self.chat_id}"
+
+    async def get_reply_message(self) -> object | None:
+        if self.message.reply_to is None:
+            return None
+        msg = type("Msg", (), {})()
+        msg.raw_text = f"original text {self.message.reply_to.reply_to_msg_id}"
+        msg.text = msg.raw_text
+        return msg
 
 
 def make_config(agent_id: UUID | None = None, owner_id: UUID | None = None) -> AgentRuntimeConfig:
@@ -179,6 +211,7 @@ async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> No
         {
             "messages": [
                 {
+                    "type": "human",
                     "role": "user",
                     "content": "Ping from dashboard",
                 }
@@ -585,7 +618,9 @@ async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_incoming_message_handles_exceptions_gracefully(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handle_incoming_message_handles_exceptions_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     telegram = FakeTelegramClient()
     runtime = MimicAgentRuntime(
         config=make_config(),
@@ -602,7 +637,7 @@ async def test_handle_incoming_message_handles_exceptions_gracefully(monkeypatch
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
 
     # Monkeypatch trigger_message to raise an error
-    async def mock_trigger_message(self, trigger: Any) -> Any:
+    async def mock_trigger_message(_self: Any, trigger: Any) -> Any:
         raise ValueError("Trigger error")
     monkeypatch.setattr(MimicAgentRuntime, "trigger_message", mock_trigger_message)
 
@@ -610,4 +645,247 @@ async def test_handle_incoming_message_handles_exceptions_gracefully(monkeypatch
     event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
     await telegram.emit_message(event)
 
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_incoming_message_reply_annotation(monkeypatch: pytest.MonkeyPatch) -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply to reply"),
+    )
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = FakeIncomingEvent(
+        chat_id=12345,
+        message_id=777,
+        text="original text",
+        reply_to_msg_id=100,
+    )
+
+    await telegram.emit_message(event)
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    prompt_text = runtime._langchain_agent.inputs[0]["messages"][-1]["content"]  # type: ignore
+    assert "Ответ на сообщение #100" in prompt_text
+    assert 'original text 100' in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_trigger_marks_read_only_when_replies(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon.tl import functions
+
+    class TrackedFakeClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[Any] = []
+
+        async def __call__(self, request: Any) -> Any:
+            self.requests.append(request)
+            return MagicMock()
+
+    telegram = TrackedFakeClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="yes i reply"),
+    )
+    await runtime.start()
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping", message_id=42))
+    assert result.response_text == "yes i reply"
+    read_requests = [
+        r for r in telegram.requests
+        if isinstance(r, functions.messages.ReadHistoryRequest)
+    ]
+    assert len(read_requests) == 1
+    assert read_requests[0].max_id == 42
+
+    # Agent chooses silence -> no ReadHistoryRequest
+    telegram.requests.clear()
+
+    class SilentAgent:
+        async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
+            return {"send_any_message": False, "text": ""}
+
+    runtime._langchain_agent = SilentAgent()  # type: ignore
+    result2 = await runtime.trigger_message(
+        AgentTrigger(peer="me", text="Ping", message_id=43)
+    )
+    assert result2.response_text == ""
+    read_requests = [
+        r for r in telegram.requests
+        if isinstance(r, functions.messages.ReadHistoryRequest)
+    ]
+    assert len(read_requests) == 0
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_read_mark_comes_before_typing(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon.tl import functions
+
+    class OrderedFakeClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[Any] = []
+
+        async def __call__(self, request: Any) -> Any:
+            self.requests.append(request)
+            return MagicMock()
+
+    telegram = OrderedFakeClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="ordered reply"),
+    )
+    await runtime.start()
+
+    await runtime.trigger_message(AgentTrigger(peer="me", text="Ping", message_id=42))
+
+    read_idx = None
+    typing_idx = None
+    for i, req in enumerate(telegram.requests):
+        if read_idx is None and isinstance(req, functions.messages.ReadHistoryRequest):
+            read_idx = i
+        if typing_idx is None and isinstance(req, functions.messages.SetTypingRequest):
+            typing_idx = i
+
+    assert read_idx is not None
+    assert typing_idx is not None
+    assert read_idx < typing_idx
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_humanized_typing_delay_used_on_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon import types
+    from telethon.tl import functions
+
+    class TypedFakeClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[Any] = []
+
+        async def __call__(self, request: Any) -> Any:
+            self.requests.append(request)
+            return MagicMock()
+
+    telegram = TypedFakeClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="typed reply"),
+    )
+    await runtime.start()
+
+    fake_time = 0.0
+
+    def fake_loop_time() -> float:
+        return fake_time
+
+    async def fake_sleep(delta: float) -> None:
+        nonlocal fake_time
+        fake_time += delta
+
+    monkeypatch.setattr(
+        "mimic42.core.agent_runtime.asyncio.get_event_loop",
+        lambda: MagicMock(time=fake_loop_time),
+    )
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("mimic42.core.agent_runtime.random.random", lambda: 1.0)
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+    assert result.response_text == "typed reply"
+    assert len(telegram.sent_messages) == 1
+
+    typing_requests = [
+        r for r in telegram.requests
+        if isinstance(r, functions.messages.SetTypingRequest)
+        and isinstance(r.action, types.SendMessageTypingAction)
+    ]
+    cancel_requests = [
+        r for r in telegram.requests
+        if isinstance(r, functions.messages.SetTypingRequest)
+        and isinstance(r.action, types.SendMessageCancelAction)
+    ]
+    assert len(typing_requests) >= 1
+    assert len(cancel_requests) >= 1
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon import types
+    from telethon.tl import functions
+
+    class TypedFakeClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[Any] = []
+
+        async def __call__(self, request: Any) -> Any:
+            self.requests.append(request)
+            return MagicMock()
+
+    telegram = TypedFakeClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="interrupt test"),
+    )
+    await runtime.start()
+
+    fake_time = 0.0
+
+    def fake_loop_time() -> float:
+        return fake_time
+
+    async def fake_sleep(delta: float) -> None:
+        nonlocal fake_time
+        fake_time += delta
+
+    monkeypatch.setattr(
+        "mimic42.core.agent_runtime.asyncio.get_event_loop",
+        lambda: MagicMock(time=fake_loop_time),
+    )
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", fake_sleep)
+
+    call_count = 0
+
+    def forced_random() -> float:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return 0.0
+        return 1.0
+
+    monkeypatch.setattr("mimic42.core.agent_runtime.random.random", forced_random)
+
+    await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+
+    cancel_requests = [
+        r for r in telegram.requests
+        if isinstance(r, functions.messages.SetTypingRequest)
+        and isinstance(r.action, types.SendMessageCancelAction)
+    ]
+    assert len(cancel_requests) >= 2
     await runtime.stop()

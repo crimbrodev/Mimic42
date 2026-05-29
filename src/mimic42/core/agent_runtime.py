@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any, Protocol, cast
@@ -176,6 +177,102 @@ class MimicAgentRuntime:
             await self._telegram_client.disconnect()
             self._state = AgentRuntimeState.STOPPED
 
+    async def _humanized_send(
+        self,
+        peer: Any,
+        text: str,
+        reply_to: int | None = None,
+    ) -> Any:
+        """Send a message after a human-like typing delay with intermittent typing indicators."""
+        from telethon import functions, types
+
+        # Resolve peer entity for typing actions
+        entity = peer
+        get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+        if callable(get_input_entity):
+            try:
+                entity = await get_input_entity(peer)
+            except Exception:
+                pass
+
+        # Calculate typing delay: ~14 chars per second + random variance
+        base_delay = len(text) * 0.07
+        delay = max(0.8, min(15.0, base_delay + random.uniform(0.2, 1.2)))
+        logger.debug("Humanized send: calculated delay %.2fs for %d chars", delay, len(text))
+
+        end_time = asyncio.get_event_loop().time() + delay
+
+        # Start typing
+        try:
+            await self._telegram_client(
+                functions.messages.SetTypingRequest(
+                    peer=entity,
+                    action=types.SendMessageTypingAction(),
+                )
+            )
+        except Exception:
+            logger.debug("Failed to start typing action", exc_info=True)
+
+        while True:
+            remaining = end_time - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            sleep_for = min(0.5, remaining)
+            await asyncio.sleep(sleep_for)
+
+            # Small chance (8%) to briefly interrupt typing for realism
+            if random.random() < 0.08:
+                try:
+                    await self._telegram_client(
+                        functions.messages.SetTypingRequest(
+                            peer=entity,
+                            action=types.SendMessageCancelAction(),
+                        )
+                    )
+                    await asyncio.sleep(random.uniform(0.05, 0.25))
+                    await self._telegram_client(
+                        functions.messages.SetTypingRequest(
+                            peer=entity,
+                            action=types.SendMessageTypingAction(),
+                        )
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    await self._telegram_client(
+                        functions.messages.SetTypingRequest(
+                            peer=entity,
+                            action=types.SendMessageTypingAction(),
+                        )
+                    )
+                except Exception:
+                    pass
+
+        # Send the actual message
+        try:
+            if reply_to is not None:
+                sent_message = await self._telegram_client.send_message(
+                    peer,
+                    text,
+                    reply_to=reply_to,
+                )
+            else:
+                sent_message = await self._telegram_client.send_message(peer, text)
+        finally:
+            # Cancel typing
+            try:
+                await self._telegram_client(
+                    functions.messages.SetTypingRequest(
+                        peer=entity,
+                        action=types.SendMessageCancelAction(),
+                    )
+                )
+            except Exception:
+                pass
+
+        return sent_message
+
     async def trigger_message(self, trigger: AgentTrigger) -> AgentTriggerResult:
         logger.debug(
             "trigger_message called: peer=%s, text=%s",
@@ -211,7 +308,8 @@ class MimicAgentRuntime:
             # Interpret structured response if provided by the agent. Expected format:
             # { "send_any_message": bool, "text": str, "reply_to": int|str }
             send_any, response_text, reply_to = _interpret_agent_response(response)
-            logger.debug(f"Interpreted response: send_any={send_any}, text={response_text[:100] if response_text else 'None'}")
+            display_text = response_text[:100] if response_text else "None"
+            logger.debug(f"Interpreted response: send_any={send_any}, text={display_text}")
 
             # Don't send empty messages
             if send_any and not response_text:
@@ -227,27 +325,41 @@ class MimicAgentRuntime:
                     peer_id_value = int(peer_id_value)
             # Use the correctly typed value for sending
             peer_id_for_send = peer_id_value
+            # Mark incoming message as read immediately after deciding to reply,
+            # before the typing delay, so the order is: read -> typing -> send.
+            if send_any and trigger.message_id is not None:
+                try:
+                    from telethon.tl import functions
+                    read_entity = peer_id_for_send
+                    get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+                    if callable(get_input_entity):
+                        try:
+                            read_entity = await get_input_entity(peer_id_for_send)
+                        except Exception:
+                            pass
+                    await self._telegram_client(
+                        functions.messages.ReadHistoryRequest(
+                            peer=read_entity,
+                            max_id=trigger.message_id,
+                        )
+                    )
+                    logger.debug(
+                        "Marked message %s as read in peer %s",
+                        trigger.message_id,
+                        trigger.peer,
+                    )
+                except Exception:
+                    logger.warning("Failed to mark message as read", exc_info=True)
+
             sent_message = None
             if send_any:
                 logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
                 try:
-                    if reply_to is not None:
-                        try:
-                            sent_message = await self._telegram_client.send_message(
-                                peer_id_for_send,
-                                response_text,
-                                reply_to=reply_to,
-                            )
-                        except TypeError:
-                            sent_message = await self._telegram_client.send_message(
-                                peer_id_for_send,
-                                response_text,
-                            )
-                    else:
-                        sent_message = await self._telegram_client.send_message(
-                            peer_id_for_send,
-                            response_text,
-                        )
+                    sent_message = await self._humanized_send(
+                        peer_id_for_send,
+                        response_text,
+                        reply_to=reply_to,
+                    )
                     logger.info(f"Message sent successfully to {peer_id_for_send}")
                 except Exception:
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
@@ -266,7 +378,9 @@ class MimicAgentRuntime:
             peer=trigger.peer,
             input_text=trigger.text,
             response_text=response_text,
-            telegram_message_id=_extract_message_id(sent_message) if sent_message is not None else None,
+            telegram_message_id=(
+                _extract_message_id(sent_message) if sent_message is not None else None
+            ),
         )
 
     def _register_message_handler(self) -> None:
@@ -326,14 +440,19 @@ class MimicAgentRuntime:
                 if input_chat is not None:
                     from telethon import functions, types
                     notify_peer = types.InputNotifyPeer(peer=input_chat)
-                    res = await self._telegram_client(functions.account.GetNotifySettingsRequest(peer=notify_peer))
+                    res = await self._telegram_client(
+                        functions.account.GetNotifySettingsRequest(peer=notify_peer)
+                    )
                     
                     is_muted = False
                     if getattr(res, "silent", False):
                         is_muted = True
                     if getattr(res, "mute_until", None):
                         from datetime import datetime
-                        now = datetime.now(res.mute_until.tzinfo) if res.mute_until.tzinfo else datetime.now()
+                        if res.mute_until.tzinfo:
+                            now = datetime.now(res.mute_until.tzinfo)
+                        else:
+                            now = datetime.now()
                         if res.mute_until > now:
                             is_muted = True
                     
@@ -483,12 +602,78 @@ class MimicAgentRuntime:
             if title:
                 sender_str += f" [Подпись/Роль: {title}]"
 
+            # NewMessage.Event delegates __getattr__ to self.message, but
+            # self.message is a raw types.Message (not the custom wrapper),
+            # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
+            from telethon.tl import types
+
+            reply_to_msg_id = None
+            ev_message = getattr(event, "message", None)
+            if ev_message:
+                reply_to = getattr(ev_message, "reply_to", None)
+                if isinstance(reply_to, types.MessageReplyHeader):
+                    reply_to_msg_id = reply_to.reply_to_msg_id
+                elif reply_to:
+                    reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
+
+            reply_str = ""
+            if reply_to_msg_id:
+                logger.debug(
+                    "Reply detected: reply_to_msg_id=%s for chat_id=%s",
+                    reply_to_msg_id,
+                    getattr(event, "chat_id", None),
+                )
+                reply_preview = ""
+                try:
+                    reply_msg = await event.get_reply_message()
+                    if reply_msg:
+                        raw = getattr(reply_msg, "raw_text", "")
+                        reply_preview = raw or getattr(reply_msg, "text", "")
+                        logger.debug(
+                            "get_reply_message succeeded, preview=%s",
+                            reply_preview[:30] if reply_preview else "(empty)",
+                        )
+                    else:
+                        logger.debug("get_reply_message returned None")
+                except Exception:
+                    logger.debug("get_reply_message failed", exc_info=True)
+
+                if not reply_preview:
+                    # Fallback: fetch the replied message directly via RPC
+                    try:
+                        get_messages = getattr(self._telegram_client, "get_messages", None)
+                        if callable(get_messages):
+                            peer = await _extract_incoming_peer(event)
+                            msgs = await get_messages(
+                                peer, ids=reply_to_msg_id
+                            )
+                            if msgs:
+                                reply_msg = msgs[0] if isinstance(msgs, list) else msgs
+                                raw = getattr(reply_msg, "raw_text", "")
+                                reply_preview = raw or getattr(reply_msg, "text", "")
+                                logger.debug(
+                                    "Fallback get_messages succeeded, preview=%s",
+                                    reply_preview[:30] if reply_preview else "(empty)",
+                                )
+                    except Exception:
+                        logger.debug("Fallback get_messages failed", exc_info=True)
+
+                if reply_preview:
+                    preview = reply_preview[:20]
+                    reply_str = (
+                        f'Ответ на сообщение #{reply_to_msg_id}'
+                        f' ("{preview}...")\n'
+                    )
+                else:
+                    reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
+
             # Format output message text
             text = (
                 f"[Входящее сообщение]\n"
                 f"Время: {time_str}\n"
                 f"Чат: {chat_type_str}\n"
                 f"Отправитель: {sender_str}\n"
+                f"{reply_str}"
                 f"Содержимое: {text}"
             )
 
