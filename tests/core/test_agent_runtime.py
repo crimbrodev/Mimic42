@@ -221,7 +221,7 @@ async def test_runtime_registers_incoming_message_handler_and_replies() -> None:
     await telegram.emit_message(FakeIncomingEvent(chat_id=99, message_id=777, text="incoming"))
 
     assert len(telegram.handlers) == 1
-    assert telegram.sent_messages == [(99, "reply to incoming")]
+    assert telegram.sent_messages == [("99", "reply to incoming")]
 
 
 @pytest.mark.asyncio
@@ -454,7 +454,7 @@ async def test_set_wakeup_timer_tool_and_scheduler() -> None:
         assert db_timers[0].status == "succeeded"
 
     assert len(telegram.sent_messages) == 1
-    assert telegram.sent_messages[0] == (12345, "timer triggered reply")
+    assert telegram.sent_messages[0] == ("12345", "timer triggered reply")
 
     await engine.dispose()
 
@@ -462,6 +462,7 @@ async def test_set_wakeup_timer_tool_and_scheduler() -> None:
 @pytest.mark.asyncio
 async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
+
     from telethon.tl import functions
     telegram = FakeTelegramClient()
 
@@ -505,6 +506,7 @@ async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> N
 @pytest.mark.asyncio
 async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
+
     from telethon.tl import functions
     telegram = FakeTelegramClient()
 
@@ -542,7 +544,7 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
     await runtime.stop()
 
     assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
-    assert telegram.sent_messages == [(12345, "should reply")]
+    assert telegram.sent_messages == [("12345", "should reply")]
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -36,12 +35,20 @@ class DatabaseShortTermMemory:
             for model in result:
                 # Normalize stored role to OpenAI/LangChain format
                 role = model.role
-                msg: dict[str, Any] = {"role": role, "content": model.content}
-                if role == "tool":
+                # Translate to LangChain expected types
+                msg_type = role
+                if role == "user": msg_type = "human"
+                if role == "assistant": msg_type = "ai"
+                
+                msg: dict[str, Any] = {"type": msg_type, "content": model.content}
+                if msg_type == "tool" or role == "tool":
                     tool_call_id = model.payload.get("tool_call_id")
                     if tool_call_id:
                         msg["tool_call_id"] = tool_call_id
-                elif role == "assistant":
+                    name = model.payload.get("name")
+                    if name:
+                        msg["name"] = name
+                elif msg_type == "ai" or role in ("assistant", "ai"):
                     tool_calls = model.payload.get("tool_calls")
                     if tool_calls:
                         msg["tool_calls"] = tool_calls
@@ -56,8 +63,11 @@ class DatabaseShortTermMemory:
         messages: list[dict[str, Any]],
     ) -> None:
         """Save a list of LangChain message dicts to the database."""
+        from datetime import datetime, timezone, timedelta
+        
+        now = datetime.now(timezone.utc)
         async with self._session_factory() as db_session:
-            for msg in messages:
+            for i, msg in enumerate(messages):
                 payload: dict[str, Any] = {"peer": peer}
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
@@ -67,6 +77,8 @@ class DatabaseShortTermMemory:
                     payload["tool_calls"] = msg["tool_calls"]
                 if "tool_call_id" in msg:
                     payload["tool_call_id"] = msg["tool_call_id"]
+                if "name" in msg:
+                    payload["name"] = msg["name"]
                 if "id" in msg:
                     payload["id"] = msg["id"]
 
@@ -80,6 +92,7 @@ class DatabaseShortTermMemory:
                         role=role,
                         content=content,
                         payload=payload,
+                        created_at=now + timedelta(microseconds=i * 1000)
                     )
                 )
             await db_session.commit()

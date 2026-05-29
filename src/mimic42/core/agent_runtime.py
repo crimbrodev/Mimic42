@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from enum import StrEnum
 from typing import Any, Protocol, cast
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
+
+logger = logging.getLogger("mimic42.agent_runtime")
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -31,7 +34,7 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
-    llm_model: str = Field(default="openrouter/free", min_length=1)
+    llm_model: str = Field(default="mistralai/mistral-small-2603", min_length=1)
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
 
@@ -69,7 +72,7 @@ class TelegramClientLike(Protocol):
 
     async def is_user_authorized(self) -> bool: ...
 
-    async def send_message(self, entity: str, message: str) -> object: ...
+    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object: ...
 
     def add_event_handler(
         self,
@@ -106,6 +109,7 @@ class MimicAgentRuntime:
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
+        self._http_client: Any | None = None
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -122,23 +126,34 @@ class MimicAgentRuntime:
     async def start(self) -> None:
         async with self._lifecycle_lock:
             if self._state is AgentRuntimeState.RUNNING:
+                logger.debug(f"Agent {self.config.agent_id} already running")
                 return
 
+            logger.info(f"Starting agent {self.config.agent_id}")
             self._state = AgentRuntimeState.STARTING
             try:
+                logger.debug("Connecting to Telegram...")
                 await self._telegram_client.connect()
+                logger.debug("Connected. Checking authorization...")
                 if not await self._telegram_client.is_user_authorized():
+                    logger.error("Telegram session not authorized")
                     raise TelegramAuthorizationRequired(
                         "Telegram user session is not authorized. Complete onboarding first."
                     )
+                logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
-            except Exception:
+                logger.info("Message handler registered")
+            except Exception as e:
+                logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
                 raise
 
             self._state = AgentRuntimeState.RUNNING
             if self._session_factory is not None:
                 self._scheduler_task = asyncio.create_task(self._run_scheduler_loop())
+            import httpx
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+            logger.info(f"Agent {self.config.agent_id} started successfully")
 
     async def stop(self) -> None:
         async with self._lifecycle_lock:
@@ -154,24 +169,41 @@ class MimicAgentRuntime:
                     pass
                 self._scheduler_task = None
 
+            if self._http_client is not None:
+                await self._http_client.aclose()
+                self._http_client = None
+
             await self._telegram_client.disconnect()
             self._state = AgentRuntimeState.STOPPED
 
     async def trigger_message(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        logger.debug(
+            "trigger_message called: peer=%s, text=%s",
+            trigger.peer,
+            trigger.text[:50],
+        )
         if self._state is not AgentRuntimeState.RUNNING:
+            logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
         async with self._trigger_lock:
+            logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             messages = await self._memory_service.build_messages(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
                 user_text=trigger.text,
             )
-            response = await self._langchain_agent.ainvoke(
-                {
-                    "messages": messages,
-                }
-            )
+            logger.debug(f"Built {len(messages)} messages for context")
+            try:
+                response = await self._langchain_agent.ainvoke(
+                    {
+                        "messages": messages,
+                    }
+                )
+                logger.debug(f"Agent response: {response}")
+            except Exception as e:
+                logger.error(f"Error invoking agent: {e}", exc_info=True)
+                raise
 
             # Convert output BaseMessage objects to plain dicts for storage/comparison.
             output_messages = _messages_to_dicts(response)
@@ -179,37 +211,48 @@ class MimicAgentRuntime:
             # Interpret structured response if provided by the agent. Expected format:
             # { "send_any_message": bool, "text": str, "reply_to": int|str }
             send_any, response_text, reply_to = _interpret_agent_response(response)
+            logger.debug(f"Interpreted response: send_any={send_any}, text={response_text[:100] if response_text else 'None'}")
+
+            # Don't send empty messages
+            if send_any and not response_text:
+                logger.debug("Agent generated empty response, not sending")
+                send_any = False
 
             # Convert stringified numeric peer ID to integer for Telethon compatibility
-            peer_id: str | int = trigger.peer
-            if peer_id.startswith("-") and peer_id[1:].isdigit():
-                peer_id = int(peer_id)
-            elif peer_id.isdigit():
-                peer_id = int(peer_id)
+            peer_id_value: str | int = trigger.peer
+            if isinstance(peer_id_value, str):
+                if peer_id_value.startswith("-") and peer_id_value[1:].isdigit():
+                    peer_id_value = int(peer_id_value)
+                elif peer_id_value.isdigit():
+                    peer_id_value = int(peer_id_value)
+            # Use the correctly typed value for sending
+            peer_id_for_send = peer_id_value
             sent_message = None
             if send_any:
+                logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
                 try:
                     if reply_to is not None:
                         try:
                             sent_message = await self._telegram_client.send_message(
-                                peer_id,
+                                peer_id_for_send,
                                 response_text,
                                 reply_to=reply_to,
                             )
                         except TypeError:
                             sent_message = await self._telegram_client.send_message(
-                                peer_id,
+                                peer_id_for_send,
                                 response_text,
                             )
                     else:
                         sent_message = await self._telegram_client.send_message(
-                            peer_id,
+                            peer_id_for_send,
                             response_text,
                         )
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger("mimic42.agent_runtime")
-                    logger.error(f"Failed to send Telegram message to {peer_id}: {e}")
+                    logger.info(f"Message sent successfully to {peer_id_for_send}")
+                except Exception:
+                    logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+            else:
+                logger.debug("Agent decided not to send message (send_any=False)")
 
             await self._memory_service.save_messages(
                 agent_id=self.config.agent_id,
@@ -241,6 +284,12 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: object) -> None:
+        logger.debug("Incoming message event received")
+        logger.debug(
+            "Incoming message event: chat_id=%s, text=%s",
+            getattr(event, "chat_id", None),
+            getattr(event, "raw_text", "")[:50],
+        )
         # Check if chat is muted
         try:
             peer = await _extract_incoming_peer(event)
@@ -264,7 +313,7 @@ class MimicAgentRuntime:
                     try:
                         input_chat = await event.get_input_chat()
                     except Exception:
-                        pass
+                        logger.warning("Failed to get input chat for mute check", exc_info=True)
                 
                 if input_chat is None:
                     input_chat = getattr(event, "input_chat", None)
@@ -291,11 +340,10 @@ class MimicAgentRuntime:
                     self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
                     
                     if is_muted:
+                        logger.info("Chat %s is muted, skipping", peer)
                         return
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            pass
+        except Exception:
+            logger.exception("Failed to check mute status for peer %s", peer)
 
         # Protect the rest of the message handling pipeline from crashes
         try:
@@ -304,8 +352,12 @@ class MimicAgentRuntime:
                 raw_text = ""
 
             # Process attachments in memory and transcribers
-            text = await _process_media_and_text(event, raw_text)
+            text = await _process_media_and_text(event, raw_text, http_client=self._http_client)
             if not text:
+                logger.info(
+                    "Empty text after _process_media_and_text for chat %s, skipping",
+                    getattr(event, "chat_id", None),
+                )
                 return
 
             # Format sender name and metadata
@@ -349,7 +401,7 @@ class MimicAgentRuntime:
                     else:
                         sender = res
                 except Exception:
-                    pass
+                    logger.warning("Failed to get sender for event", exc_info=True)
             if sender:
                 first_name = getattr(sender, "first_name", None) or ""
                 last_name = getattr(sender, "last_name", None) or ""
@@ -419,6 +471,7 @@ class MimicAgentRuntime:
                                 else None
                             )
                     except Exception:
+                        logger.warning("Failed to get participant title", exc_info=True)
                         title = None
                     self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
 
@@ -447,10 +500,8 @@ class MimicAgentRuntime:
                     message_id=_extract_incoming_message_id(event),
                 )
             )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            pass
+        except Exception:
+            logger.exception("Unhandled exception in incoming message handler")
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
@@ -459,8 +510,8 @@ class MimicAgentRuntime:
                 await self._check_and_trigger_timers()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                print(f"Error in scheduler loop: {e}")
+            except Exception:
+                logger.exception("Error in scheduler loop")
 
             try:
                 await asyncio.sleep(5.0)
@@ -508,8 +559,8 @@ class MimicAgentRuntime:
                         )
                     )
                     timer.status = "succeeded"
-                except Exception as e:
-                    print(f"Error triggering timer {timer.id}: {e}")
+                except Exception:
+                    logger.exception("Error triggering timer %s", timer.id)
                     timer.status = "failed"
 
                 # Update status
@@ -522,7 +573,12 @@ class MimicAgentRuntime:
                     await update_session.commit()
 
 
-async def _process_media_and_text(event: object, text: str) -> str:
+async def _process_media_and_text(
+    event: object,
+    text: str,
+    *,
+    http_client: Any | None = None,
+) -> str:
     message = getattr(event, "message", None)
     if not message or not getattr(message, "media", None):
         return text
@@ -567,35 +623,37 @@ async def _process_media_and_text(event: object, text: str) -> str:
             filename = "voice.ogg" if media_id.startswith("voice:") else "video.mp4"
 
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    import base64
-                    audio_b64 = base64.b64encode(file_bytes).decode("utf-8")
-                    payload = {
-                        "model": "openai/whisper-large-v3",
-                        "input_audio": {
-                            "data": audio_b64,
-                            "format": filename.split(".")[-1],
-                        },
-                    }
-                    headers = {
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    }
-                    response = await client.post(
-                        "https://openrouter.ai/api/v1/audio/transcriptions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    response.raise_for_status()
-                    res_json = response.json()
-                    transcription = res_json.get("text", "")
-                    mtype = (
-                        "Голосовое сообщение"
-                        if media_id.startswith("voice:")
-                        else "Видеосообщение"
-                    )
-                    trans_text = f"[{mtype} (расшифровка: \"{transcription}\")]"
-                    return trans_text + (f" {text}" if text else "")
+                client = http_client
+                if client is None:
+                    client = httpx.AsyncClient(timeout=30.0)
+                import base64
+                audio_b64 = base64.b64encode(file_bytes).decode("utf-8")
+                payload = {
+                    "model": "openai/whisper-large-v3",
+                    "input_audio": {
+                        "data": audio_b64,
+                        "format": filename.split(".")[-1],
+                    },
+                }
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                response = await client.post(
+                    "https://openrouter.ai/api/v1/audio/transcriptions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                res_json = response.json()
+                transcription = res_json.get("text", "")
+                mtype = (
+                    "Голосовое сообщение"
+                    if media_id.startswith("voice:")
+                    else "Видеосообщение"
+                )
+                trans_text = f"[{mtype} (расшифровка: \"{transcription}\")]"
+                return trans_text + (f" {text}" if text else "")
             except Exception as e:
                 mtype = (
                     "Голосовое сообщение"
@@ -706,7 +764,7 @@ def _message_to_dict(msg: object) -> dict[str, Any]:
         return msg.model_dump()  # type: ignore[no-any-return]
     # Fallback for plain objects with attributes
     result: dict[str, Any] = {}
-    for attr in ("type", "role", "content", "tool_calls", "tool_call_id", "id"):
+    for attr in ("type", "role", "content", "tool_calls", "tool_call_id", "id", "name"):
         val = getattr(msg, attr, None)
         if val is not None:
             result[attr] = val
@@ -720,17 +778,34 @@ def _extract_response_text(response: object) -> str:
         response_map = cast("Mapping[str, Any]", response)
         messages = response_map.get("messages")
         if isinstance(messages, list) and messages:
-            last_message = messages[-1]
-            content = _get_content(last_message)
-            if content:
-                return content
+            # Find the last AIMessage (assistant response), not just the last message
+            # (which could be a ToolMessage if tools were called).
+            # BaseMessage objects use `type` ("ai", "human", "tool"), not `role`.
+            for message in reversed(messages):
+                if isinstance(message, Mapping):
+                    msg_map = cast("Mapping[str, Any]", message)
+                    role = msg_map.get("role")
+                    if role == "assistant":
+                        content = _get_content(message)
+                        if content:
+                            return content
+                else:
+                    # Check for BaseMessage objects (AIMessage has type="ai")
+                    msg_type = getattr(message, "type", None)
+                    role = getattr(message, "role", None)
+                    if role == "assistant" or msg_type == "ai":
+                        content = _get_content(message)
+                        if content:
+                            return content
         output = response_map.get("output") or response_map.get("content")
         if isinstance(output, str) and output:
             return output
     content = _get_content(response)
     if content:
         return content
-    return str(response)
+    # Fallback: return empty string instead of str(response) to avoid sending garbage
+    logger.warning("Could not extract response text from: %s", type(response))
+    return ""
 
 
 def _get_content(value: object) -> str | None:

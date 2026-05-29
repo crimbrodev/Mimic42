@@ -176,6 +176,34 @@ class FakeTelethonClient:
             return res
         elif isinstance(request, functions.messages.SendInlineBotResultRequest):
             return True
+        elif isinstance(request, functions.account.GetPrivacyRequest):
+            privacy_rule = MagicMock(spec=types.PrivacyValueAllowContacts)
+            res = MagicMock(spec=types.account.PrivacyRules)
+            res.rules = [privacy_rule]
+            res.chats = []
+            res.users = []
+            return res
+        elif isinstance(request, functions.account.SetPrivacyRequest):
+            return True
+        elif isinstance(request, functions.account.GetGlobalPrivacySettingsRequest):
+            settings = MagicMock(spec=types.GlobalPrivacySettings)
+            settings.archive_and_mute_new_noncontact_peers = True
+            settings.keep_archived_unmuted = True
+            settings.keep_archived_folders = True
+            settings.hide_read_marks = False
+            settings.new_noncontact_peers_require_premium = False
+            settings.display_gifts_button = True
+            settings.noncontact_peers_paid_stars = None
+            return settings
+        elif isinstance(request, functions.account.SetGlobalPrivacySettingsRequest):
+            return True
+        elif isinstance(request, functions.account.GetContentSettingsRequest):
+            settings = MagicMock(spec=types.account.ContentSettings)
+            settings.sensitive_enabled = False
+            settings.sensitive_can_change = True
+            return settings
+        elif isinstance(request, functions.account.SetContentSettingsRequest):
+            return True
         return True
 
     async def get_entity(self, peer: Any) -> Any:
@@ -555,7 +583,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 65
+    assert len(tools) == 71
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
@@ -571,6 +599,12 @@ async def test_tools_exposed_in_langchain() -> None:
     assert "get_chat_folders" in tool_names
     assert "create_or_update_chat_folder" in tool_names
     assert "delete_chat_folder" in tool_names
+    assert "get_privacy_settings" in tool_names
+    assert "set_privacy_settings" in tool_names
+    assert "get_global_settings" in tool_names
+    assert "set_global_settings" in tool_names
+    assert "get_content_settings" in tool_names
+    assert "set_content_settings" in tool_names
 
 
 @pytest.mark.asyncio
@@ -1074,6 +1108,7 @@ async def test_location_and_venue_tools() -> None:
 
 import json
 
+
 @pytest.mark.asyncio
 async def test_search_location_tool(monkeypatch) -> None:
     client = FakeTelethonClient()
@@ -1093,7 +1128,7 @@ async def test_search_location_tool(monkeypatch) -> None:
         def read(self) -> bytes:
             return self.data
 
-        def __enter__(self) -> "FakeResponse":
+        def __enter__(self) -> FakeResponse:
             return self
 
         def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -1234,4 +1269,62 @@ async def test_bot_interaction_tools() -> None:
     assert res_start_param["success"] is True
     send_calls = [c for c in client.calls if c[0] == "send_message"]
     assert send_calls[-1][1]["message"] == "/start ref123"
+
+
+@pytest.mark.asyncio
+async def test_privacy_and_account_settings_tools() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # get_privacy_settings
+    res = await toolbox.get_privacy_settings("status_timestamp")
+    assert res["key"] == "status_timestamp"
+    assert res["rules"] == ["allow_contacts"]
+
+    # set_privacy_settings
+    res_set = await toolbox.set_privacy_settings(
+        key="phone_number",
+        rule="disallow_all",
+        allowed_users=["username"],
+    )
+    assert res_set["success"] is True
+    set_reqs = [r for r in client.requests if isinstance(r, functions.account.SetPrivacyRequest)]
+    assert len(set_reqs) == 1
+    req = set_reqs[0]
+    assert isinstance(req.key, types.InputPrivacyKeyPhoneNumber)
+    assert len(req.rules) == 2  # disallow_all + allow_users exception
+
+    # get_global_settings
+    res_global = await toolbox.get_global_settings()
+    assert res_global["archive_and_mute_new_noncontact_peers"] is True
+    assert res_global["hide_read_marks"] is False
+
+    # set_global_settings
+    res_set_global = await toolbox.set_global_settings(
+        hide_read_marks=True,
+        archive_and_mute_new_noncontact_peers=False,
+    )
+    assert res_set_global["success"] is True
+    global_reqs = [
+        r for r in client.requests
+        if isinstance(r, functions.account.SetGlobalPrivacySettingsRequest)
+    ]
+    assert len(global_reqs) == 1
+    assert global_reqs[0].settings.hide_read_marks is True
+    assert global_reqs[0].settings.archive_and_mute_new_noncontact_peers is False
+
+    # get_content_settings
+    res_content = await toolbox.get_content_settings()
+    assert res_content["sensitive_enabled"] is False
+    assert res_content["sensitive_can_change"] is True
+
+    # set_content_settings
+    res_set_content = await toolbox.set_content_settings(sensitive_enabled=True)
+    assert res_set_content["success"] is True
+    content_reqs = [
+        r for r in client.requests
+        if isinstance(r, functions.account.SetContentSettingsRequest)
+    ]
+    assert len(content_reqs) == 1
+    assert content_reqs[0].sensitive_enabled is True
 

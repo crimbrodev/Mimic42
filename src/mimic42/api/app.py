@@ -13,6 +13,7 @@ from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, req
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
+    AgentRuntimeState,
     AgentStatus,
     AgentTrigger,
     AgentTriggerResult,
@@ -161,6 +162,26 @@ def create_app(
                     status_sink=database_agent_store.update_status,
                 )
         try:
+            # Restore running agents from database after restart
+            print(f"[lifespan] should_build={should_build_database}, manager_none={manager is None}")
+            if should_build_database and manager is None:
+                try:
+                    agent_records = await database_agent_store.list_agents()
+                    print(f"[lifespan] Found {len(agent_records)} agents")
+                    for record in agent_records:
+                        print(f"[lifespan] Agent {record.agent_id} state={record.state}")
+                        if record.state == AgentRuntimeState.RUNNING:
+                            try:
+                                config = await database_agent_store.get_runtime_config(
+                                    record.agent_id
+                                )
+                                print(f"[lifespan] Restoring agent {record.agent_id} with model {config.llm_model}")
+                                await app.state.agent_manager.create_agent(config, start=True)
+                                print(f"[lifespan] Agent {record.agent_id} restored and started")
+                            except Exception as exc:
+                                print(f"[lifespan] Failed to restore agent {record.agent_id}: {exc}")
+                except Exception as exc:
+                    print(f"[lifespan] Failed to restore running agents: {exc}")
             yield
         finally:
             await _get_agent_manager(app).shutdown()

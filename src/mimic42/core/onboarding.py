@@ -167,7 +167,7 @@ class AgentOnboardingService:
         telegram_factory: TelegramAuthClientFactory,
         cipher: SecretCipher | None = None,
         agent_store: AgentStore | None = None,
-        llm_model: str = "openrouter/free",
+        llm_model: str = "mistralai/mistral-small-2603",
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository()
         self._telegram_factory = telegram_factory

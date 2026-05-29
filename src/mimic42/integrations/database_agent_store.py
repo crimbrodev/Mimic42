@@ -23,7 +23,7 @@ class DatabaseAgentStore:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         cipher: SecretCipher | None = None,
-        llm_model: str = "openrouter/free",
+        llm_model: str = "mistralai/mistral-small-2603",
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
