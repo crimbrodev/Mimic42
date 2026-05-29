@@ -1684,8 +1684,10 @@ class TelegramToolbox:
         import os
 
         import httpx
+        from mimic42.config import Settings
 
-        api_key = os.environ.get("OPENROUTER_API_KEY")
+        settings = Settings()
+        api_key = settings.openrouter_api_key
         if not api_key:
             return "[Ошибка: OPENROUTER_API_KEY не задан в окружении.]"
 

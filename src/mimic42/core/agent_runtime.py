@@ -792,8 +792,10 @@ async def _process_media_and_text(
             from io import BytesIO
 
             import httpx
+            from mimic42.config import Settings
 
-            api_key = os.environ.get("OPENROUTER_API_KEY")
+            settings = Settings()
+            api_key = settings.openrouter_api_key
             if not api_key:
                 err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
                 return err_msg + (f" {text}" if text else "")
