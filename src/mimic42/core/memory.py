@@ -180,7 +180,13 @@ class RuntimeMemoryService:
     async def _load_long_term_context(self, *, agent_id: UUID, query: str) -> list[str]:
         if self._long_term is None:
             return []
-        return await self._long_term.search(agent_id=agent_id, query=query)
+        try:
+            return await self._long_term.search(agent_id=agent_id, query=query)
+        except Exception:
+            import logging
+            logger = logging.getLogger("mimic42.memory")
+            logger.warning("Failed to search long-term memory", exc_info=True)
+            return []
 
     def _fit_token_budget(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         selected_reversed: list[dict[str, Any]] = []
