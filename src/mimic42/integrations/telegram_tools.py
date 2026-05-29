@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -178,6 +178,63 @@ def format_media_object(msg: Any) -> str | None:
     return None
 
 
+PrivacyKey = Literal[
+    "status_timestamp",
+    "profile_photo",
+    "phone_number",
+    "added_by_phone",
+    "chat_invite",
+    "phone_call",
+    "phone_p2p",
+    "forwards",
+    "voice_messages",
+    "about",
+    "birthday",
+    "saved_music",
+    "no_paid_messages",
+    "star_gifts_auto_save",
+]
+
+PrivacyRule = Literal[
+    "allow_all",
+    "allow_contacts",
+    "allow_close_friends",
+    "allow_premium",
+    "allow_bots",
+    "disallow_all",
+    "disallow_contacts",
+    "disallow_bots",
+]
+
+_PRIVACY_KEY_MAP: dict[PrivacyKey, type] = {
+    "status_timestamp": types.InputPrivacyKeyStatusTimestamp,
+    "profile_photo": types.InputPrivacyKeyProfilePhoto,
+    "phone_number": types.InputPrivacyKeyPhoneNumber,
+    "added_by_phone": types.InputPrivacyKeyAddedByPhone,
+    "chat_invite": types.InputPrivacyKeyChatInvite,
+    "phone_call": types.InputPrivacyKeyPhoneCall,
+    "phone_p2p": types.InputPrivacyKeyPhoneP2P,
+    "forwards": types.InputPrivacyKeyForwards,
+    "voice_messages": types.InputPrivacyKeyVoiceMessages,
+    "about": types.InputPrivacyKeyAbout,
+    "birthday": types.InputPrivacyKeyBirthday,
+    "saved_music": types.InputPrivacyKeySavedMusic,
+    "no_paid_messages": types.InputPrivacyKeyNoPaidMessages,
+    "star_gifts_auto_save": types.InputPrivacyKeyStarGiftsAutoSave,
+}
+
+_PRIVACY_RULE_MAP: dict[PrivacyRule, type] = {
+    "allow_all": types.InputPrivacyValueAllowAll,
+    "allow_contacts": types.InputPrivacyValueAllowContacts,
+    "allow_close_friends": types.InputPrivacyValueAllowCloseFriends,
+    "allow_premium": types.InputPrivacyValueAllowPremium,
+    "allow_bots": types.InputPrivacyValueAllowBots,
+    "disallow_all": types.InputPrivacyValueDisallowAll,
+    "disallow_contacts": types.InputPrivacyValueDisallowContacts,
+    "disallow_bots": types.InputPrivacyValueDisallowBots,
+}
+
+
 class TelegramToolbox:
     """High-level business-friendly Telegram tools for the agent."""
 
@@ -187,22 +244,36 @@ class TelegramToolbox:
         agent_id: UUID | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
     ) -> None:
-        # Wrap get_input_entity to automatically resolve numeric string IDs to integers
-        orig_get_input_entity = getattr(client, "get_input_entity", None)
-        if orig_get_input_entity is not None:
-            async def safe_get_input_entity(entity: Any) -> Any:
-                if isinstance(entity, str):
-                    if entity.startswith("-") and entity[1:].isdigit():
-                        entity = int(entity)
-                    elif entity.isdigit():
-                        entity = int(entity)
-                return await orig_get_input_entity(entity)
-            
-            client.get_input_entity = safe_get_input_entity
-
         self._client = client
         self._agent_id = agent_id
         self._session_factory = session_factory
+
+    async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
+        """Resolve a peer string/int to a Telethon entity."""
+        if isinstance(peer, str):
+            if "#" in peer:
+                peer = peer.split("#", 1)[-1]
+            peer = peer.strip()
+            if peer.startswith("-") and peer[1:].isdigit():
+                peer = int(peer)
+            elif peer.isdigit():
+                peer = int(peer)
+
+        if as_input:
+            orig_func = getattr(self._client, "get_input_entity", None)
+        else:
+            orig_func = getattr(self._client, "get_entity", None)
+            
+        if orig_func is not None:
+            try:
+                return await orig_func(peer)
+            except ValueError as e:
+                # Provide a more helpful error for the LLM
+                raise ValueError(
+                    f"Telegram error: {e}. If you used a numeric ID, it might not be cached yet. "
+                    "Try using a @username, phone number, or call 'get_dialogs' first to populate the cache."
+                ) from e
+        raise ValueError("Telethon client missing entity resolution method")
 
     # Category 1: Messages and Basic Communication (1-12)
 
@@ -211,7 +282,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a text message (markdown supported)."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.send_message(
                 entity, message, reply_to=reply_to_msg_id, parse_mode=CustomMarkdown()
             )
@@ -224,7 +295,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Edit a message previously sent by the bot."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.edit_message(
                 entity, message_id, new_message, parse_mode=CustomMarkdown()
             )
@@ -237,7 +308,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Delete messages by ID."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client.delete_messages(entity, message_ids, revoke=revoke)
             return {"success": True}
         except Exception as e:
@@ -248,8 +319,8 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Forward messages from one chat to another."""
         try:
-            from_entity = await self._client.get_input_entity(from_peer)
-            to_entity = await self._client.get_input_entity(to_peer)
+            from_entity = await self._resolve_peer(from_peer)
+            to_entity = await self._resolve_peer(to_peer)
             await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
             return {"success": True}
         except Exception as e:
@@ -258,7 +329,7 @@ class TelegramToolbox:
     async def pin_message(self, peer: str, message_id: int, silent: bool = False) -> dict[str, Any]:
         """Pin a message in a chat."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client.pin_message(entity, message_id, silent=silent)
             return {"success": True}
         except Exception as e:
@@ -267,7 +338,7 @@ class TelegramToolbox:
     async def unpin_message(self, peer: str, message_id: int | None = None) -> dict[str, Any]:
         """Unpin a message in a chat."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client.unpin_message(entity, message_id)
             return {"success": True}
         except Exception as e:
@@ -276,7 +347,7 @@ class TelegramToolbox:
     async def unpin_all_messages(self, peer: str) -> dict[str, Any]:
         """Unpin all pinned messages in a chat."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client(functions.messages.UnpinAllMessagesRequest(peer=entity))
             return {"success": True}
         except Exception as e:
@@ -285,7 +356,7 @@ class TelegramToolbox:
     async def send_chat_action(self, peer: str, action: str) -> dict[str, Any]:
         """Send a chat action indicator (typing, record_audio, etc.)."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             # Map simple strings to Telethon actions
             action_obj: Any = types.SendMessageTypingAction()
             if action == "record_audio":
@@ -304,7 +375,7 @@ class TelegramToolbox:
     async def send_reaction(self, peer: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Set a reaction on a message."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             reaction_list = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
             await self._client(
                 functions.messages.SendReactionRequest(
@@ -320,7 +391,7 @@ class TelegramToolbox:
     async def get_message_reactions(self, peer: str, message_id: int) -> dict[str, Any]:
         """Get the reactions of a message."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             result = await self._client(
                 functions.messages.GetMessageReactionsListRequest(
                     peer=entity,
@@ -345,7 +416,7 @@ class TelegramToolbox:
     async def mark_chat_as_read(self, peer: str, max_id: int | None = None) -> dict[str, Any]:
         """Mark messages in a chat as read."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client(
                 functions.messages.ReadHistoryRequest(peer=entity, max_id=max_id or 0)
             )
@@ -358,7 +429,7 @@ class TelegramToolbox:
     ) -> list[dict[str, Any]]:
         """Get message history (annotated with Media IDs)."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer, as_input=False)
             messages = []
             async for msg in self._client.iter_messages(entity, limit=limit, offset_id=offset_id):
                 text = msg.text or ""
@@ -378,6 +449,7 @@ class TelegramToolbox:
                         "sender_id": msg.sender_id,
                         "date": msg.date.isoformat() if msg.date else None,
                         "text": text,
+                        "has_buttons": bool(msg.reply_markup),
                     }
                 )
             return messages
@@ -407,7 +479,7 @@ class TelegramToolbox:
     async def search_messages(self, peer: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Search messages in a chat."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer, as_input=False)
             messages = []
             async for msg in self._client.iter_messages(entity, search=query, limit=limit):
                 messages.append(
@@ -416,6 +488,7 @@ class TelegramToolbox:
                         "sender_id": msg.sender_id,
                         "date": msg.date.isoformat() if msg.date else None,
                         "text": msg.text or "",
+                        "has_buttons": bool(msg.reply_markup),
                     }
                 )
             return messages
@@ -425,7 +498,7 @@ class TelegramToolbox:
     async def delete_dialog(self, peer: str, revoke: bool = True) -> dict[str, Any]:
         """Delete a dialog or leave a group/channel."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client.delete_dialog(entity, revoke=revoke)
             return {"success": True}
         except Exception as e:
@@ -435,7 +508,7 @@ class TelegramToolbox:
         """Archive dialogs."""
         try:
             for p in peers:
-                entity = await self._client.get_input_entity(p)
+                entity = await self._resolve_peer(p)
                 await self._client(
                     functions.folders.EditPeerFoldersRequest(
                         folder_peers=[types.InputFolderPeer(peer=entity, folder_id=1)]
@@ -449,7 +522,7 @@ class TelegramToolbox:
         """Unarchive dialogs."""
         try:
             for p in peers:
-                entity = await self._client.get_input_entity(p)
+                entity = await self._resolve_peer(p)
                 await self._client(
                     functions.folders.EditPeerFoldersRequest(
                         folder_peers=[types.InputFolderPeer(peer=entity, folder_id=0)]
@@ -462,7 +535,7 @@ class TelegramToolbox:
     async def mute_chat(self, peer: str, duration_hours: int | None = None) -> dict[str, Any]:
         """Mute a chat. If duration_hours is not specified, it will be muted indefinitely (10 years)."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             notify_peer = types.InputNotifyPeer(peer=entity)
             if duration_hours is not None:
                 until = datetime.now() + timedelta(hours=duration_hours)
@@ -484,7 +557,7 @@ class TelegramToolbox:
     async def unmute_chat(self, peer: str) -> dict[str, Any]:
         """Unmute a chat, enabling notifications."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             notify_peer = types.InputNotifyPeer(peer=entity)
             await self._client(
                 functions.account.UpdateNotifySettingsRequest(
@@ -502,7 +575,7 @@ class TelegramToolbox:
     async def get_common_chats(self, peer: str) -> list[dict[str, Any]]:
         """Get common groups/channels with a user."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             res = await self._client(
                 functions.messages.GetCommonChatsRequest(user_id=entity, max_id=0, limit=100)
             )
@@ -530,7 +603,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a file by URL or Media ID."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
                     entity, file_source, caption=caption, reply_to=reply_to_msg_id
@@ -674,7 +747,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send voice note by URL or Media ID."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
                     entity, file_source, voice_note=True, reply_to=reply_to_msg_id
@@ -703,7 +776,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send video note (round video) by URL or Media ID."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
                     entity, file_source, video_note=True, reply_to=reply_to_msg_id
@@ -726,7 +799,7 @@ class TelegramToolbox:
     async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
         """Send a map location pin with specific latitude and longitude."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.send_file(
                 entity,
                 types.InputMediaGeoPoint(
@@ -742,7 +815,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a beautiful venue location card with a map pin, title, and address."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.send_file(
                 entity,
                 types.InputMediaVenue(
@@ -761,10 +834,10 @@ class TelegramToolbox:
     async def search_location(self, query: str) -> dict[str, Any]:
         """Search for a location/address and return its coordinates and formatted address using ArcGIS."""
         try:
-            import urllib.request
-            import urllib.parse
-            import json
             import asyncio
+            import json
+            import urllib.parse
+            import urllib.request
 
             url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -895,7 +968,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a sticker by its Media ID."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
             if media_type != "sticker":
                 return {"success": False, "error": "media_id is not a sticker"}
@@ -915,7 +988,7 @@ class TelegramToolbox:
     async def get_profile(self, peer: str) -> dict[str, Any]:
         """Get high-level user profile details (bio/about, common chats)."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer, as_input=False)
             if isinstance(entity, types.User):
                 full_info = await self._client(functions.users.GetFullUserRequest(id=entity))
                 full_user = full_info.full_user
@@ -996,7 +1069,7 @@ class TelegramToolbox:
     async def delete_contact(self, peer: str) -> dict[str, Any]:
         """Delete user from contact list."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             await self._client(functions.contacts.DeleteContactsRequest(id=[entity]))
             return {"success": True}
         except Exception as e:
@@ -1027,7 +1100,7 @@ class TelegramToolbox:
     async def get_message_buttons(self, peer: str, message_id: int) -> dict[str, Any]:
         """Get inline or reply keyboard buttons from a message."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.get_messages(entity, ids=message_id)
             if not msg or not msg.reply_markup:
                 return {"buttons": []}
@@ -1066,7 +1139,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Click an inline callback button on a message."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             data: bytes | None = None
             if button_data is not None:
                 data = button_data.encode("utf-8")
@@ -1112,7 +1185,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Press a reply keyboard button by sending its text as a message."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             msg = await self._client.send_message(entity, button_text)
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -1123,9 +1196,9 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Query an inline bot and return results."""
         try:
-            bot_entity = await self._client.get_input_entity(bot_username)
+            bot_entity = await self._resolve_peer(bot_username)
             peer_entity = (
-                await self._client.get_input_entity(peer)
+                await self._resolve_peer(peer)
                 if peer
                 else types.InputPeerEmpty()
             )
@@ -1164,7 +1237,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send an inline bot result to a chat."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             reply_to = None
             if reply_to_msg_id is not None:
                 reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
@@ -1186,7 +1259,7 @@ class TelegramToolbox:
         """Start a bot with an optional deep-link parameter."""
         try:
             target = peer or bot_username
-            entity = await self._client.get_input_entity(target)
+            entity = await self._resolve_peer(target)
             start_msg = f"/start {parameter}".strip()
             msg = await self._client.send_message(entity, start_msg)
             return {"success": True, "message_id": msg.id}
@@ -1198,7 +1271,7 @@ class TelegramToolbox:
     async def get_chat_info(self, peer: str) -> dict[str, Any]:
         """Get high-level details of a group/channel (participants, about description)."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer)
             if isinstance(entity, types.User):
                 return {"error": "Target entity is a user, not a chat/channel"}
 
@@ -1237,7 +1310,7 @@ class TelegramToolbox:
     async def check_admin_permissions(self, peer: str) -> dict[str, Any]:
         """Check administrative rights of the bot inside a chat/group."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer)
             if isinstance(entity, types.User):
                 return {"is_admin": False, "reason": "Target is a user"}
 
@@ -1282,7 +1355,7 @@ class TelegramToolbox:
     async def invite_to_channel(self, channel: str, users: list[str]) -> dict[str, Any]:
         """Invite users to channel/supergroup."""
         try:
-            ch_entity = await self._client.get_input_entity(channel)
+            ch_entity = await self._resolve_peer(channel)
             await self._client(
                 functions.channels.InviteToChannelRequest(channel=ch_entity, users=users)
             )
@@ -1359,7 +1432,7 @@ class TelegramToolbox:
     ) -> list[dict[str, Any]]:
         """Get members of a group/channel (with custom titles)."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer)
             filter_obj = types.ChannelParticipantsRecent()
             if filter_type == "admins":
                 filter_obj = types.ChannelParticipantsAdmins()
@@ -1391,7 +1464,7 @@ class TelegramToolbox:
     async def get_chat_admin_log(self, peer: str, limit: int = 20) -> list[dict[str, Any]]:
         """Get administrative audit log."""
         try:
-            entity = await self._client.get_entity(peer)
+            entity = await self._resolve_peer(peer)
             log_entries = []
             async for event in self._client.iter_admin_log(entity, limit=limit):
                 log_entries.append(
@@ -1409,7 +1482,7 @@ class TelegramToolbox:
     async def join_channel(self, channel: str) -> dict[str, Any]:
         """Join a public channel/group."""
         try:
-            entity = await self._client.get_input_entity(channel)
+            entity = await self._resolve_peer(channel)
             await self._client(functions.channels.JoinChannelRequest(channel=entity))
             return {"success": True}
         except Exception as e:
@@ -1426,7 +1499,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a poll or quiz."""
         try:
-            entity = await self._client.get_input_entity(peer)
+            entity = await self._resolve_peer(peer)
             poll = types.Poll(
                 id=0,
                 hash=0,
@@ -1753,7 +1826,7 @@ class TelegramToolbox:
                 resolved = []
                 for p in peer_list:
                     try:
-                        entity = await self._client.get_input_entity(p)
+                        entity = await self._resolve_peer(p)
                         resolved.append(entity)
                     except Exception:
                         pass
@@ -1804,13 +1877,163 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # Category 8: Privacy and Account Settings
+
+    async def get_privacy_settings(self, key: PrivacyKey) -> dict[str, Any]:
+        """Get privacy settings for a specific key."""
+        try:
+            key_cls = _PRIVACY_KEY_MAP.get(key)
+            if not key_cls:
+                return {"error": f"Unknown privacy key: {key}"}
+            result = await self._client(
+                functions.account.GetPrivacyRequest(key=key_cls())
+            )
+            rules = []
+            for rule in result.rules:
+                if isinstance(rule, types.PrivacyValueAllowAll):
+                    rules.append("allow_all")
+                elif isinstance(rule, types.PrivacyValueAllowContacts):
+                    rules.append("allow_contacts")
+                elif isinstance(rule, types.PrivacyValueAllowCloseFriends):
+                    rules.append("allow_close_friends")
+                elif isinstance(rule, types.PrivacyValueAllowPremium):
+                    rules.append("allow_premium")
+                elif isinstance(rule, types.PrivacyValueAllowBots):
+                    rules.append("allow_bots")
+                elif isinstance(rule, types.PrivacyValueAllowUsers):
+                    rules.append({"type": "allow_users", "count": len(rule.users)})
+                elif isinstance(rule, types.PrivacyValueAllowChatParticipants):
+                    rules.append({"type": "allow_chats", "count": len(rule.chats)})
+                elif isinstance(rule, types.PrivacyValueDisallowAll):
+                    rules.append("disallow_all")
+                elif isinstance(rule, types.PrivacyValueDisallowContacts):
+                    rules.append("disallow_contacts")
+                elif isinstance(rule, types.PrivacyValueDisallowBots):
+                    rules.append("disallow_bots")
+                elif isinstance(rule, types.PrivacyValueDisallowUsers):
+                    rules.append({"type": "disallow_users", "count": len(rule.users)})
+                elif isinstance(rule, types.PrivacyValueDisallowChatParticipants):
+                    rules.append({"type": "disallow_chats", "count": len(rule.chats)})
+                else:
+                    rules.append({"type": type(rule).__name__})
+            return {"key": key, "rules": rules}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def set_privacy_settings(
+        self,
+        key: PrivacyKey,
+        rule: PrivacyRule,
+        allowed_users: list[str] | None = None,
+        disallowed_users: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Set privacy settings for a specific key."""
+        try:
+            key_cls = _PRIVACY_KEY_MAP.get(key)
+            if not key_cls:
+                return {"success": False, "error": f"Unknown privacy key: {key}"}
+            rule_cls = _PRIVACY_RULE_MAP.get(rule)
+            if not rule_cls:
+                return {"success": False, "error": f"Unknown privacy rule: {rule}"}
+            tl_rules: list[types.TypeInputPrivacyRule] = [rule_cls()]
+            if allowed_users:
+                entities = []
+                for u in allowed_users:
+                    entities.append(await self._resolve_peer(u))
+                tl_rules.append(types.InputPrivacyValueAllowUsers(users=entities))
+            if disallowed_users:
+                entities = []
+                for u in disallowed_users:
+                    entities.append(await self._resolve_peer(u))
+                tl_rules.append(types.InputPrivacyValueDisallowUsers(users=entities))
+            await self._client(
+                functions.account.SetPrivacyRequest(
+                    key=key_cls(),
+                    rules=tl_rules,
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_global_settings(self) -> dict[str, Any]:
+        """Get global privacy settings."""
+        try:
+            res = await self._client(
+                functions.account.GetGlobalPrivacySettingsRequest()
+            )
+            return {
+                "archive_and_mute_new_noncontact_peers": bool(
+                    res.archive_and_mute_new_noncontact_peers
+                ),
+                "keep_archived_unmuted": bool(res.keep_archived_unmuted),
+                "keep_archived_folders": bool(res.keep_archived_folders),
+                "hide_read_marks": bool(res.hide_read_marks),
+                "new_noncontact_peers_require_premium": bool(
+                    res.new_noncontact_peers_require_premium
+                ),
+                "display_gifts_button": bool(res.display_gifts_button),
+                "noncontact_peers_paid_stars": res.noncontact_peers_paid_stars,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def set_global_settings(
+        self,
+        archive_and_mute_new_noncontact_peers: bool | None = None,
+        keep_archived_unmuted: bool | None = None,
+        keep_archived_folders: bool | None = None,
+        hide_read_marks: bool | None = None,
+        new_noncontact_peers_require_premium: bool | None = None,
+        display_gifts_button: bool | None = None,
+    ) -> dict[str, Any]:
+        """Set global privacy settings."""
+        try:
+            settings = types.GlobalPrivacySettings(
+                archive_and_mute_new_noncontact_peers=archive_and_mute_new_noncontact_peers,
+                keep_archived_unmuted=keep_archived_unmuted,
+                keep_archived_folders=keep_archived_folders,
+                hide_read_marks=hide_read_marks,
+                new_noncontact_peers_require_premium=new_noncontact_peers_require_premium,
+                display_gifts_button=display_gifts_button,
+            )
+            await self._client(
+                functions.account.SetGlobalPrivacySettingsRequest(settings=settings)
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_content_settings(self) -> dict[str, Any]:
+        """Get content settings (sensitive content filter)."""
+        try:
+            res = await self._client(functions.account.GetContentSettingsRequest())
+            return {
+                "sensitive_enabled": bool(res.sensitive_enabled),
+                "sensitive_can_change": bool(res.sensitive_can_change),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def set_content_settings(self, sensitive_enabled: bool) -> dict[str, Any]:
+        """Enable or disable sensitive content filter."""
+        try:
+            await self._client(
+                functions.account.SetContentSettingsRequest(
+                    sensitive_enabled=sensitive_enabled
+                )
+            )
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 def build_telegram_langchain_tools(
     client: TelethonRequestClient,
     agent_id: UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> list[BaseTool]:
-    """Expose all 50 tools as LangChain StructuredTools."""
+    """Expose all 71 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=session_factory)
 
     return [
@@ -2128,6 +2351,7 @@ def build_telegram_langchain_tools(
             name="get_message_buttons",
             description=(
                 "Get inline or reply keyboard buttons from a message. "
+                "CRITICAL: The 'peer' argument MUST be the chat/bot where the message is located, not the current chat! "
                 "Returns list of buttons with text, type, data, URL, etc."
             ),
         ),
@@ -2166,5 +2390,49 @@ def build_telegram_langchain_tools(
             description=(
                 "Start a bot with optional deep-link parameter (e.g., /start ref123)."
             ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_privacy_settings,
+            name="get_privacy_settings",
+            description=(
+                "Get privacy settings for a specific key. "
+                "Keys: status_timestamp, profile_photo, phone_number, added_by_phone, "
+                "chat_invite, phone_call, phone_p2p, forwards, voice_messages, "
+                "about, birthday, saved_music, no_paid_messages, star_gifts_auto_save."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_privacy_settings,
+            name="set_privacy_settings",
+            description=(
+                "Set privacy settings for a specific key. "
+                "Rules: allow_all, allow_contacts, allow_close_friends, allow_premium, "
+                "allow_bots, disallow_all, disallow_contacts, disallow_bots. "
+                "Optionally add allowed_users or disallowed_users for exceptions."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_global_settings,
+            name="get_global_settings",
+            description="Get global privacy settings (archive, read marks, etc.).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_global_settings,
+            name="set_global_settings",
+            description=(
+                "Set global privacy settings: archive_and_mute_new_noncontact_peers, "
+                "keep_archived_unmuted, keep_archived_folders, hide_read_marks, "
+                "new_noncontact_peers_require_premium, display_gifts_button."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_content_settings,
+            name="get_content_settings",
+            description="Get content settings (sensitive content filter status).",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.set_content_settings,
+            name="set_content_settings",
+            description="Enable or disable sensitive content filter.",
         ),
     ]

@@ -39,7 +39,7 @@
 
 ### Правила
 
-- Используй Uv, Ruff и Ty, Bun
+- Используй Uv, Ruff и Ty, Bun, Supabase CLI
 - Обязательно читай документацию библиотек, с которыми работаешь
 - Используй Git и делай изменения в отдельной ветке с последующим PR
 
@@ -48,3 +48,9 @@
 - Для базы данных Supabase
 - Для бэкэнда Python, для фронта TypeScript
 - LangChain, Mem0, Telethon
+
+### Мастхев ресурсы
+
+- https://docs.langchain.com/oss/python/langchain/overview
+- https://docs.telethon.dev/en/stable/
+- https://supabase.com/docs

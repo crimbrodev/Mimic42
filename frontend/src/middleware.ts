@@ -3,10 +3,10 @@ import { createServerClient } from '@supabase/ssr';
 import type { Database } from '@/types/supabase';
 
 // Public routes that don't require authentication
-const PUBLIC_PATHS = ['/login', '/register', '/auth/callback'];
+const PUBLIC_PATHS = ['/login', '/register', '/auth/callback', '/reset-password', '/update-password'];
 
 // Routes that should redirect authenticated users away
-const AUTH_ONLY_PATHS = ['/login', '/register'];
+const AUTH_ONLY_PATHS = ['/login', '/register', '/reset-password'];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;

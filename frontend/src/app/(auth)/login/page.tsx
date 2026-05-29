@@ -25,6 +25,7 @@ function LoginContent() {
   const [values, setValues] = useState<LoginFormValues>({ email: '', password: '' });
   const [errors, setErrors] = useState<Partial<LoginFormValues>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const [isResetLoading, setIsResetLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
 
@@ -198,9 +199,18 @@ function LoginContent() {
               }
             />
 
+            <div className="flex justify-end">
+              <Link
+                href="/reset-password"
+                className="font-mono text-xs text-void-500 hover:text-plasma-300 transition-colors"
+              >
+                Забыли пароль?
+              </Link>
+            </div>
+
             <Button
               type="submit"
-              className="w-full mt-2"
+              className="w-full"
               size="lg"
               isLoading={isLoading}
             >
