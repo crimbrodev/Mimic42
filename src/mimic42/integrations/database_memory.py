@@ -40,7 +40,15 @@ class DatabaseShortTermMemory:
                 if role == "user": msg_type = "human"
                 if role == "assistant": msg_type = "ai"
                 
-                msg: dict[str, Any] = {"type": msg_type, "content": model.content}
+                content = model.content
+                import json
+                try:
+                    if content.startswith("[") and content.endswith("]"):
+                        content = json.loads(content)
+                except Exception:
+                    pass
+
+                msg: dict[str, Any] = {"type": msg_type, "content": content}
                 if msg_type == "tool" or role == "tool":
                     tool_call_id = model.payload.get("tool_call_id")
                     if tool_call_id:
@@ -71,6 +79,12 @@ class DatabaseShortTermMemory:
                 payload: dict[str, Any] = {"peer": peer}
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
+                
+                import json
+                if isinstance(content, list):
+                    content = json.dumps(content, ensure_ascii=False)
+                elif not isinstance(content, str):
+                    content = str(content)
 
                 # Preserve LangChain-specific fields in payload
                 if "tool_calls" in msg:
