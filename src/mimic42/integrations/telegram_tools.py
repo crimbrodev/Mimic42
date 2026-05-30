@@ -1729,13 +1729,48 @@ class TelegramToolbox:
             return {"success": False, "error": str(e)}
 
     async def join_channel(self, channel: str) -> dict[str, Any]:
-        """Join a public channel/group."""
+        """Join a public channel/group by username/ID or a private one via invite link (e.g. t.me/+hash or t.me/joinchat/hash)."""
         try:
-            entity = await self._resolve_peer(channel)
-            await self._client(functions.channels.JoinChannelRequest(channel=entity))
-            return {"success": True}
+            import re
+            
+            # Check if it's an invite link
+            match = re.search(r'(?:joinchat/|\+)([\w-]+)', channel)
+            if match:
+                invite_hash = match.group(1)
+                try:
+                    updates = await self._client(functions.messages.ImportChatInviteRequest(hash=invite_hash))
+                    result = {"success": True, "type": "private_invite"}
+                    if hasattr(updates, "chats") and updates.chats:
+                        chat = updates.chats[0]
+                        result["chat_id"] = getattr(chat, "id", None)
+                        result["title"] = getattr(chat, "title", None)
+                    return result
+                except Exception as e:
+                    error_str = str(e)
+                    error_type = str(type(e))
+                    # If user is already a participant, that's practically a success
+                    if "UserAlreadyParticipantError" in error_type or "User already participant" in error_str:
+                        return {"success": True, "note": "Already a participant", "type": "private_invite"}
+                    # If it's a join-request channel, it returns an InviteRequestSentError
+                    if "InviteRequestSentError" in error_type or "requested to join" in error_str.lower():
+                        return {"success": True, "note": "Join request sent and pending approval", "type": "private_invite"}
+                    raise e
+            else:
+                # Public channel or exact peer
+                entity = await self._resolve_peer(channel)
+                updates = await self._client(functions.channels.JoinChannelRequest(channel=entity))
+                result = {"success": True, "type": "public"}
+                if hasattr(updates, "chats") and updates.chats:
+                    chat = updates.chats[0]
+                    result["chat_id"] = getattr(chat, "id", None)
+                    result["title"] = getattr(chat, "title", None)
+                return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            error_str = str(e)
+            error_type = str(type(e))
+            if "InviteRequestSentError" in error_type or "requested to join" in error_str.lower():
+                return {"success": True, "note": "Join request sent and pending approval", "type": "public"}
+            return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
 
     async def send_poll(
         self,
