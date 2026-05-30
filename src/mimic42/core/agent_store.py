@@ -88,6 +88,7 @@ class InMemoryAgentStore:
         )
         self._agents[record.agent_id] = record
         from mimic42.core.onboarding import load_default_system_prompt
+
         self._configs[record.agent_id] = AgentRuntimeConfig(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,

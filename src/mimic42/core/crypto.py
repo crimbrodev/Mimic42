@@ -12,4 +12,3 @@ class FernetSecretCipher:
 
     def decrypt(self, value: str) -> str:
         return self._fernet.decrypt(value.encode()).decode()
-

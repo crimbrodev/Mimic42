@@ -36,6 +36,7 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
     llm_model: str = Field(default="mistralai/mistral-small-2603", min_length=1)
+    reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)
@@ -155,6 +156,7 @@ class MimicAgentRuntime:
             if self._session_factory is not None:
                 self._scheduler_task = asyncio.create_task(self._run_scheduler_loop())
             import httpx
+
             self._http_client = httpx.AsyncClient(timeout=30.0)
             logger.info(f"Agent {self.config.agent_id} started successfully")
 
@@ -335,6 +337,7 @@ class MimicAgentRuntime:
             if send_any and trigger.message_id is not None:
                 try:
                     from telethon.tl import functions
+
                     read_entity = peer_id_for_send
                     get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
                     if callable(get_input_entity):
@@ -413,8 +416,9 @@ class MimicAgentRuntime:
         try:
             peer = await _extract_incoming_peer(event)
             import time
+
             now_ts = time.time()
-            
+
             is_muted = False
             if peer in self._chat_mute_cache:
                 cached_muted, expiry = self._chat_mute_cache[peer]
@@ -424,7 +428,7 @@ class MimicAgentRuntime:
                         return
                 else:
                     self._chat_mute_cache.pop(peer, None)
-                    
+
             if peer not in self._chat_mute_cache:
                 input_chat = None
                 get_input_chat = getattr(event, "get_input_chat", None)
@@ -433,36 +437,38 @@ class MimicAgentRuntime:
                         input_chat = await event.get_input_chat()
                     except Exception:
                         logger.warning("Failed to get input chat for mute check", exc_info=True)
-                
+
                 if input_chat is None:
                     input_chat = getattr(event, "input_chat", None)
-                
+
                 if input_chat is None:
                     get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
                     if callable(get_input_entity):
                         input_chat = await get_input_entity(peer)
-                
+
                 if input_chat is not None:
                     from telethon import functions, types
+
                     notify_peer = types.InputNotifyPeer(peer=input_chat)
                     res = await self._telegram_client(
                         functions.account.GetNotifySettingsRequest(peer=notify_peer)
                     )
-                    
+
                     is_muted = False
                     if getattr(res, "silent", False):
                         is_muted = True
                     if getattr(res, "mute_until", None):
                         from datetime import datetime
+
                         if res.mute_until.tzinfo:
                             now = datetime.now(res.mute_until.tzinfo)
                         else:
                             now = datetime.now()
                         if res.mute_until > now:
                             is_muted = True
-                    
+
                     self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
-                    
+
                     if is_muted:
                         logger.info("Chat %s is muted, skipping", peer)
                         return
@@ -489,6 +495,7 @@ class MimicAgentRuntime:
             is_group = getattr(event, "is_group", False)
 
             from datetime import datetime
+
             msg_date = getattr(event, "date", None)
             if not msg_date:
                 message = getattr(event, "message", None)
@@ -504,10 +511,7 @@ class MimicAgentRuntime:
                 chat = await event.get_chat()
                 chat_title = getattr(chat, "title", "")
                 if not chat_title:
-                    chat_title = (
-                        getattr(chat, "username", "")
-                        or str(getattr(event, "chat_id", ""))
-                    )
+                    chat_title = getattr(chat, "username", "") or str(getattr(event, "chat_id", ""))
                 if is_group:
                     chat_type_str = f'Группа "{chat_title}"'
                 else:
@@ -519,6 +523,7 @@ class MimicAgentRuntime:
             if callable(get_sender):
                 try:
                     import inspect
+
                     res = get_sender()
                     if inspect.isawaitable(res):
                         sender = await res
@@ -564,6 +569,7 @@ class MimicAgentRuntime:
                 sender_id = event.sender_id
                 cache_key = (chat_id, sender_id)
                 import time
+
                 now_ts = time.time()
                 if cache_key in self._member_tag_cache:
                     cached_title, expiry = self._member_tag_cache[cache_key]
@@ -577,12 +583,11 @@ class MimicAgentRuntime:
                 if is_expired:
                     try:
                         from telethon.tl import functions
+
                         is_supergroup = getattr(event, "is_channel", False)
                         if is_supergroup:
                             input_chat = getattr(event, "input_chat", None) or chat_id
-                            input_sender = (
-                                getattr(event, "input_sender", None) or sender_id
-                            )
+                            input_sender = getattr(event, "input_sender", None) or sender_id
                             res = await event.client(
                                 functions.channels.GetParticipantRequest(
                                     channel=input_chat,
@@ -590,9 +595,7 @@ class MimicAgentRuntime:
                                 )
                             )
                             title = (
-                                res.participant.title
-                                if hasattr(res.participant, "title")
-                                else None
+                                res.participant.title if hasattr(res.participant, "title") else None
                             )
                     except Exception:
                         logger.warning("Failed to get participant title", exc_info=True)
@@ -649,9 +652,7 @@ class MimicAgentRuntime:
                         get_messages = getattr(self._telegram_client, "get_messages", None)
                         if callable(get_messages):
                             peer = await _extract_incoming_peer(event)
-                            msgs = await get_messages(
-                                peer, ids=reply_to_msg_id
-                            )
+                            msgs = await get_messages(peer, ids=reply_to_msg_id)
                             if msgs:
                                 reply_msg = msgs[0] if isinstance(msgs, list) else msgs
                                 raw = getattr(reply_msg, "raw_text", "")
@@ -665,10 +666,7 @@ class MimicAgentRuntime:
 
                 if reply_preview:
                     preview = reply_preview[:20]
-                    reply_str = (
-                        f'Ответ на сообщение #{reply_to_msg_id}'
-                        f' ("{preview}...")\n'
-                    )
+                    reply_str = f'Ответ на сообщение #{reply_to_msg_id} ("{preview}...")\n'
                 else:
                     reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
 
@@ -721,13 +719,10 @@ class MimicAgentRuntime:
         now_utc = datetime.now(UTC)
 
         async with self._session_factory() as db_session:
-            stmt = (
-                select(AgentTimerModel)
-                .where(
-                    AgentTimerModel.agent_id == self.config.agent_id,
-                    AgentTimerModel.status == "pending",
-                    AgentTimerModel.trigger_at <= now_utc,
-                )
+            stmt = select(AgentTimerModel).where(
+                AgentTimerModel.agent_id == self.config.agent_id,
+                AgentTimerModel.status == "pending",
+                AgentTimerModel.trigger_at <= now_utc,
             )
             result = await db_session.scalars(stmt)
             due_timers = list(result)
@@ -775,6 +770,7 @@ async def _process_media_and_text(
 
     try:
         from mimic42.integrations.telegram_tools import format_media_object
+
         media_id = format_media_object(message)
         if not media_id:
             return text
@@ -787,16 +783,13 @@ async def _process_media_and_text(
             emoji = parts[5] if len(parts) > 5 else ""
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
-            return (
-                f"[Стикер {emoji} id={media_id}{pack_str}]"
-                + (f" {text}" if text else "")
-            )
+            return f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else "")
 
         elif media_id.startswith(("voice:", "round:")):
-            import os
             from io import BytesIO
 
             import httpx
+
             from mimic42.config import Settings
 
             settings = Settings()
@@ -819,6 +812,7 @@ async def _process_media_and_text(
                 if client is None:
                     client = httpx.AsyncClient(timeout=30.0)
                 import base64
+
                 audio_b64 = base64.b64encode(file_bytes).decode("utf-8")
                 payload = {
                     "model": "openai/whisper-large-v3",
@@ -839,19 +833,11 @@ async def _process_media_and_text(
                 response.raise_for_status()
                 res_json = response.json()
                 transcription = res_json.get("text", "")
-                mtype = (
-                    "Голосовое сообщение"
-                    if media_id.startswith("voice:")
-                    else "Видеосообщение"
-                )
-                trans_text = f"[{mtype} (расшифровка: \"{transcription}\")]"
+                mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
+                trans_text = f'[{mtype} (расшифровка: "{transcription}")]'
                 return trans_text + (f" {text}" if text else "")
             except Exception as e:
-                mtype = (
-                    "Голосовое сообщение"
-                    if media_id.startswith("voice:")
-                    else "Видеосообщение"
-                )
+                mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
                 return f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else "")
 
         elif media_id.startswith("doc:"):
@@ -874,12 +860,12 @@ async def _process_media_and_text(
                 "yml",
             )
             if ext not in allowed_exts and ext != "":
-                return (
-                    f"[Файл name={filename} (этот тип документа нельзя открыть)]"
-                    + (f" {text}" if text else "")
+                return f"[Файл name={filename} (этот тип документа нельзя открыть)]" + (
+                    f" {text}" if text else ""
                 )
 
             from io import BytesIO
+
             buffer = BytesIO()
             await event.client.download_media(message, file=buffer)
             file_bytes = buffer.getvalue()
@@ -889,6 +875,7 @@ async def _process_media_and_text(
             if ext == "docx":
                 try:
                     import docx
+
                     doc = docx.Document(BytesIO(file_bytes))
                     paragraphs = [p.text for p in doc.paragraphs]
                     for table in doc.tables:
@@ -896,7 +883,7 @@ async def _process_media_and_text(
                             row_text = [cell.text for cell in row.cells]
                             paragraphs.append(" | ".join(row_text))
                     doc_content = "\n".join(paragraphs)
-                    doc_text = f"[Файл name={filename} (содержимое: \"{doc_content}\")]"
+                    doc_text = f'[Файл name={filename} (содержимое: "{doc_content}")]'
                     return doc_text + (f" {text}" if text else "")
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
@@ -905,6 +892,7 @@ async def _process_media_and_text(
             elif ext == "xlsx":
                 try:
                     import openpyxl
+
                     wb = openpyxl.load_workbook(BytesIO(file_bytes), read_only=True)
                     sheet_texts = []
                     for sheet in wb.worksheets:
@@ -914,7 +902,7 @@ async def _process_media_and_text(
                             if row_str.strip(" |"):
                                 sheet_texts.append(row_str)
                     xlsx_content = "\n".join(sheet_texts)
-                    xlsx_text = f"[Файл name={filename} (содержимое: \"{xlsx_content}\")]"
+                    xlsx_text = f'[Файл name={filename} (содержимое: "{xlsx_content}")]'
                     return xlsx_text + (f" {text}" if text else "")
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
@@ -929,7 +917,7 @@ async def _process_media_and_text(
                     except Exception as e:
                         txt_content = f"<Ошибка декодирования: {e}>"
 
-                txt_text = f"[Файл name={filename} (содержимое: \"{txt_content}\")]"
+                txt_text = f'[Файл name={filename} (содержимое: "{txt_content}")]'
                 return txt_text + (f" {text}" if text else "")
 
     except Exception:
@@ -1081,11 +1069,12 @@ def _extract_incoming_text(event: object) -> str:
     text = getattr(event, "raw_text", None) or getattr(event, "text", None)
     if not isinstance(text, str):
         text = ""
-        
+
     message = getattr(event, "message", None)
     if message and getattr(message, "media", None):
         try:
             from mimic42.integrations.telegram_tools import format_media_object
+
             media_id = format_media_object(message)
             if media_id:
                 if media_id.startswith("photo:"):
@@ -1095,30 +1084,20 @@ def _extract_incoming_text(event: object) -> str:
                     emoji = parts[5] if len(parts) > 5 else ""
                     pack_name = parts[6] if len(parts) > 6 else ""
                     pack_str = f" пак={pack_name}" if pack_name else ""
-                    text = (
-                        f"[Стикер {emoji} id={media_id}{pack_str}]"
-                        + (f" {text}" if text else "")
+                    text = f"[Стикер {emoji} id={media_id}{pack_str}]" + (
+                        f" {text}" if text else ""
                     )
                 elif media_id.startswith("voice:"):
-                    text = (
-                        f"[Голосовое сообщение id={media_id}]"
-                        + (f" {text}" if text else "")
-                    )
+                    text = f"[Голосовое сообщение id={media_id}]" + (f" {text}" if text else "")
                 elif media_id.startswith("round:"):
-                    text = (
-                        f"[Видеосообщение id={media_id}]"
-                        + (f" {text}" if text else "")
-                    )
+                    text = f"[Видеосообщение id={media_id}]" + (f" {text}" if text else "")
                 elif media_id.startswith("doc:"):
                     parts = media_id.split(":")
                     filename = parts[5] if len(parts) > 5 else "file"
-                    text = (
-                        f"[Файл name={filename} id={media_id}]"
-                        + (f" {text}" if text else "")
-                    )
+                    text = f"[Файл name={filename} id={media_id}]" + (f" {text}" if text else "")
         except Exception:
             pass
-            
+
     return text
 
 

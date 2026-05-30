@@ -181,7 +181,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const update = useUpdateAgentSettings(agentId);
 
   const [values, setValues] = useState<AgentSettingsValues>({
-    name: '', soul_prompt: '',
+    name: '', soul_prompt: '', reasoning_effort: 'high',
   });
   const [formErrors, setFormErrors] = useState<Partial<AgentSettingsValues>>({});
   const [dirty, setDirty] = useState(false);
@@ -191,6 +191,7 @@ function TabSettings({ agentId }: { agentId: string }) {
       setValues({
         name: details.name,
         soul_prompt: details.soul_prompt ?? '',
+        reasoning_effort: (details.settings?.reasoning_effort as 'none' | 'medium' | 'high') ?? 'high',
       });
     }
   }, [details]);
@@ -211,7 +212,15 @@ function TabSettings({ agentId }: { agentId: string }) {
     }
     setFormErrors({});
     try {
-      await update.mutateAsync(result.data);
+      // Create settings object if there's any non-core settings field
+      const submissionData = {
+        name: result.data.name,
+        soul_prompt: result.data.soul_prompt,
+        settings: {
+          reasoning_effort: result.data.reasoning_effort
+        }
+      };
+      await update.mutateAsync(submissionData);
       toast('Настройки сохранены', 'success');
       setDirty(false);
     } catch (e: unknown) {
@@ -241,7 +250,26 @@ function TabSettings({ agentId }: { agentId: string }) {
         hint="Описание личности, стиля общения и особенностей агента"
       />
 
-
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
+          Уровень рассуждения (Reasoning Effort)
+        </label>
+        <select
+          value={values.reasoning_effort}
+          onChange={(e) => set('reasoning_effort', e.target.value)}
+          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <option value="none">None (Без рассуждения)</option>
+          <option value="medium">Medium (Среднее рассуждение)</option>
+          <option value="high">High (Глубокое рассуждение)</option>
+        </select>
+        {formErrors.reasoning_effort && (
+          <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
+            <span aria-hidden="true">✗</span>
+            {formErrors.reasoning_effort}
+          </p>
+        )}
+      </div>
 
       <div className="flex items-center gap-3 pt-2">
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>

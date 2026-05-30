@@ -25,5 +25,6 @@ def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
         )
 
     from mimic42.integrations.telegram_tools import CustomMarkdown
+
     client.parse_mode = CustomMarkdown()
     return client

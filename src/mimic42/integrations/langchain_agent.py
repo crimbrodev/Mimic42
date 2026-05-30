@@ -30,12 +30,15 @@ def build_langchain_agent(
         model_name = config.llm_model
         if model_name.startswith("openrouter/") and model_name != "openrouter/free":
             model_name = model_name.replace("openrouter/", "", 1)
-        model = ChatOpenRouter(
-            model=model_name,
-            api_key=SecretStr(settings.openrouter_api_key)
+        kwargs = {
+            "model": model_name,
+            "api_key": SecretStr(settings.openrouter_api_key)
             if settings.openrouter_api_key is not None
             else None,
-        )
+        }
+        if config.reasoning_effort != "none":
+            kwargs["reasoning"] = {"effort": config.reasoning_effort}
+        model = ChatOpenRouter(**kwargs)
     else:
         model = config.llm_model
 

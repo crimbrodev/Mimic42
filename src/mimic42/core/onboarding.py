@@ -28,6 +28,7 @@ def load_default_system_prompt() -> str:
         "Помни контекст разговора и учитывай предыдущие сообщения."
     )
 
+
 DEFAULT_SYSTEM_PROMPT = load_default_system_prompt()
 
 
@@ -285,11 +286,7 @@ class AgentOnboardingService:
 
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)
-        if (
-            not session.soul_prompt
-            or session.api_id is None
-            or session.api_hash_secret is None
-        ):
+        if not session.soul_prompt or session.api_id is None or session.api_hash_secret is None:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
 
         return AgentRuntimeConfig(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -37,9 +37,11 @@ class DatabaseShortTermMemory:
                 role = model.role
                 # Translate to LangChain expected types
                 msg_type = role
-                if role == "user": msg_type = "human"
-                if role == "assistant": msg_type = "ai"
-                
+                if role == "user":
+                    msg_type = "human"
+                if role == "assistant":
+                    msg_type = "ai"
+
                 content = model.content
 
                 msg: dict[str, Any] = {"type": msg_type, "content": content}
@@ -65,16 +67,17 @@ class DatabaseShortTermMemory:
         messages: list[dict[str, Any]],
     ) -> None:
         """Save a list of LangChain message dicts to the database."""
-        from datetime import datetime, timezone, timedelta
-        
-        now = datetime.now(timezone.utc)
+        from datetime import datetime, timedelta
+
+        now = datetime.now(UTC)
         async with self._session_factory() as db_session:
             for i, msg in enumerate(messages):
                 payload: dict[str, Any] = {"peer": peer}
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
-                
+
                 import json
+
                 if isinstance(content, list):
                     content = json.dumps(content, ensure_ascii=False)
                 elif not isinstance(content, str):
@@ -100,7 +103,7 @@ class DatabaseShortTermMemory:
                         role=role,
                         content=content,
                         payload=payload,
-                        created_at=now + timedelta(microseconds=i * 1000)
+                        created_at=now + timedelta(microseconds=i * 1000),
                     )
                 )
             await db_session.commit()

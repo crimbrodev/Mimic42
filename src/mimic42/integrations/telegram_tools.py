@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol, Callable, Awaitable, ParamSpec, TypeVar
+from typing import Any, Literal, ParamSpec, Protocol, TypeVar
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -1732,13 +1733,15 @@ class TelegramToolbox:
         """Join a public channel/group by username/ID or a private one via invite link (e.g. t.me/+hash or t.me/joinchat/hash)."""
         try:
             import re
-            
+
             # Check if it's an invite link
-            match = re.search(r'(?:joinchat/|\+)([\w-]+)', channel)
+            match = re.search(r"(?:joinchat/|\+)([\w-]+)", channel)
             if match:
                 invite_hash = match.group(1)
                 try:
-                    updates = await self._client(functions.messages.ImportChatInviteRequest(hash=invite_hash))
+                    updates = await self._client(
+                        functions.messages.ImportChatInviteRequest(hash=invite_hash)
+                    )
                     result = {"success": True, "type": "private_invite"}
                     if hasattr(updates, "chats") and updates.chats:
                         chat = updates.chats[0]
@@ -1749,11 +1752,25 @@ class TelegramToolbox:
                     error_str = str(e)
                     error_type = str(type(e))
                     # If user is already a participant, that's practically a success
-                    if "UserAlreadyParticipantError" in error_type or "User already participant" in error_str:
-                        return {"success": True, "note": "Already a participant", "type": "private_invite"}
+                    if (
+                        "UserAlreadyParticipantError" in error_type
+                        or "User already participant" in error_str
+                    ):
+                        return {
+                            "success": True,
+                            "note": "Already a participant",
+                            "type": "private_invite",
+                        }
                     # If it's a join-request channel, it returns an InviteRequestSentError
-                    if "InviteRequestSentError" in error_type or "requested to join" in error_str.lower():
-                        return {"success": True, "note": "Join request sent and pending approval", "type": "private_invite"}
+                    if (
+                        "InviteRequestSentError" in error_type
+                        or "requested to join" in error_str.lower()
+                    ):
+                        return {
+                            "success": True,
+                            "note": "Join request sent and pending approval",
+                            "type": "private_invite",
+                        }
                     raise e
             else:
                 # Public channel or exact peer
@@ -1769,7 +1786,11 @@ class TelegramToolbox:
             error_str = str(e)
             error_type = str(type(e))
             if "InviteRequestSentError" in error_type or "requested to join" in error_str.lower():
-                return {"success": True, "note": "Join request sent and pending approval", "type": "public"}
+                return {
+                    "success": True,
+                    "note": "Join request sent and pending approval",
+                    "type": "public",
+                }
             return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
 
     async def send_poll(
@@ -1967,9 +1988,9 @@ class TelegramToolbox:
     ) -> str:
         """Call OpenRouter audio transcription API (Whisper)."""
         import base64
-        import os
 
         import httpx
+
         from mimic42.config import Settings
 
         settings = Settings()
@@ -2311,12 +2332,14 @@ class TelegramToolbox:
 P = ParamSpec("P")
 R = TypeVar("R")
 
+
 def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
     """
     Wrap a toolbox method so it always returns a JSON string.
     This is required for OpenRouter SDK compatibility, which expects
     ToolMessage.content to be a string.
     """
+
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
         result = await coro(*args, **kwargs)
         if isinstance(result, str):
@@ -2324,8 +2347,9 @@ def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[st
         if isinstance(result, (dict, list)):
             return json.dumps(result, ensure_ascii=False)
         return str(result)
-        
+
     import inspect
+
     wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
     wrapper.__name__ = getattr(coro, "__name__", "wrapper")
     wrapper.__doc__ = getattr(coro, "__doc__", None)
@@ -2335,26 +2359,31 @@ def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[st
 P = ParamSpec("P")
 R = TypeVar("R")
 
+
 def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
     """
     Wrap a toolbox method so it always returns a JSON string.
     This is required for OpenRouter SDK compatibility, which expects
     ToolMessage.content to be a string.
     """
+
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
         result = await coro(*args, **kwargs)
         if isinstance(result, str):
             return result
         if isinstance(result, (dict, list)):
             import json
+
             return json.dumps(result, ensure_ascii=False)
         return str(result)
-        
+
     import inspect
+
     wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
     wrapper.__name__ = getattr(coro, "__name__", "wrapper")
     wrapper.__doc__ = getattr(coro, "__doc__", None)
     return wrapper
+
 
 def build_telegram_langchain_tools(
     client: TelethonRequestClient,
@@ -2659,8 +2688,7 @@ def build_telegram_langchain_tools(
             coroutine=toolbox.toggle_join_to_send,
             name="toggle_join_to_send",
             description=(
-                "Enable or disable the requirement to join the channel "
-                "before sending messages."
+                "Enable or disable the requirement to join the channel before sending messages."
             ),
         ),
         StructuredTool.from_function(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Protocol
@@ -42,8 +43,6 @@ from mimic42.integrations.database_session import create_engine, create_session_
 from mimic42.integrations.mem0_memory import Mem0LongTermMemory, build_mem0_memory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
-import logging
-
 logger = logging.getLogger("mimic42.api.app")
 
 CurrentUserDep = Annotated[CurrentUser, Depends(require_user)]
@@ -84,6 +83,7 @@ class CreateAgentRequest(BaseModel):
 
     def to_runtime_config(self, *, owner_id: UUID) -> AgentRuntimeConfig:
         from mimic42.core.onboarding import load_default_system_prompt
+
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
             owner_id=owner_id,
@@ -128,9 +128,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         database_engine = None
-        should_build_database = (
-            app_settings.database_connection_string
-            and (onboarding_service is None or agent_store is None)
+        should_build_database = app_settings.database_connection_string and (
+            onboarding_service is None or agent_store is None
         )
         if should_build_database:
             database_engine = create_engine(app_settings.database_connection_string)
@@ -167,7 +166,9 @@ def create_app(
                 )
         try:
             # Restore running agents from database after restart
-            logger.info(f"[lifespan] should_build={should_build_database}, manager_none={manager is None}")
+            logger.info(
+                f"[lifespan] should_build={should_build_database}, manager_none={manager is None}"
+            )
             if should_build_database and manager is None:
                 try:
                     agent_records = await database_agent_store.list_agents()
@@ -179,11 +180,17 @@ def create_app(
                                 config = await database_agent_store.get_runtime_config(
                                     record.agent_id
                                 )
-                                logger.info(f"[lifespan] Restoring agent {record.agent_id} with model {config.llm_model}")
+                                logger.info(
+                                    f"[lifespan] Restoring agent {record.agent_id} with model {config.llm_model}"
+                                )
                                 await app.state.agent_manager.create_agent(config, start=True)
-                                logger.info(f"[lifespan] Agent {record.agent_id} restored and started")
+                                logger.info(
+                                    f"[lifespan] Agent {record.agent_id} restored and started"
+                                )
                             except Exception as exc:
-                                logger.exception(f"[lifespan] Failed to restore agent {record.agent_id}: {exc}")
+                                logger.exception(
+                                    f"[lifespan] Failed to restore agent {record.agent_id}: {exc}"
+                                )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
             yield
@@ -254,13 +261,14 @@ def create_app(
                 PhoneNumberInvalidError,
                 RPCError,
             )
+
             if isinstance(exc, ApiIdInvalidError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
                         "Неверная комбинация API ID и API Hash. "
                         "Пожалуйста, проверьте их на my.telegram.org."
-                    )
+                    ),
                 ) from exc
             if isinstance(exc, PhoneNumberInvalidError):
                 raise HTTPException(
@@ -268,22 +276,21 @@ def create_app(
                     detail=(
                         "Неверный формат номера телефона. "
                         "Используйте международный формат (например, +79991234567)."
-                    )
+                    ),
                 ) from exc
             if isinstance(exc, FloodWaitError):
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек."
+                    detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек.",
                 ) from exc
             if isinstance(exc, RPCError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Ошибка Telegram: {exc.message}"
+                    detail=f"Ошибка Telegram: {exc.message}",
                 ) from exc
             if isinstance(exc, ValueError):
                 raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=str(exc)
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
                 ) from exc
             raise exc
 
@@ -316,25 +323,26 @@ def create_app(
                 PhoneCodeInvalidError,
                 RPCError,
             )
+
             if isinstance(exc, (PhoneCodeInvalidError, PhoneCodeEmptyError)):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Неверный код подтверждения. Пожалуйста, проверьте и введите код заново."
+                    detail="Неверный код подтверждения. Пожалуйста, проверьте и введите код заново.",
                 ) from exc
             if isinstance(exc, PhoneCodeExpiredError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Срок действия кода подтверждения истек. Запросите новый код."
+                    detail="Срок действия кода подтверждения истек. Запросите новый код.",
                 ) from exc
             if isinstance(exc, PasswordHashInvalidError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Неверный пароль двухфакторной аутентификации (2FA)."
+                    detail="Неверный пароль двухфакторной аутентификации (2FA).",
                 ) from exc
             if isinstance(exc, RPCError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Ошибка Telegram: {exc.message}"
+                    detail=f"Ошибка Telegram: {exc.message}",
                 ) from exc
             raise exc
 
@@ -490,14 +498,14 @@ def create_app(
             await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         else:
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
-        
+
         memory_store = _get_long_term_memory(app)
         if memory_store is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Долгосрочная память Mem0 не настроена на сервере.",
             )
-        
+
         try:
             if query:
                 return await memory_store.search_memories(agent_id, query)
@@ -523,14 +531,14 @@ def create_app(
             await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         else:
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
-        
+
         memory_store = _get_long_term_memory(app)
         if memory_store is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Долгосрочная память Mem0 не настроена на сервере.",
             )
-        
+
         try:
             return await memory_store.get_memory_history(memory_id)
         except Exception as exc:
