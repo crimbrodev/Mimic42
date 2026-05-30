@@ -76,6 +76,7 @@ class DatabaseAgentStore:
                 raise KeyError(f"Agent {agent_id} does not have a runtime config")
             agent, telegram_session = item
             from mimic42.core.onboarding import load_default_system_prompt
+
             return AgentRuntimeConfig(
                 agent_id=agent.id,
                 owner_id=agent.owner_id,
@@ -92,6 +93,9 @@ class DatabaseAgentStore:
                     else telegram_session.session_ciphertext
                 ),
                 llm_model=self._llm_model,
+                reasoning_effort=agent.settings.get("reasoning_effort", "high")
+                if agent.settings
+                else "high",
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,

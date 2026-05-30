@@ -134,6 +134,7 @@ export const agentSettingsSchema = z.object({
     .min(0)
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
+  reasoning_effort: z.enum(['none', 'medium', 'high']).optional(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

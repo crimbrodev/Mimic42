@@ -115,24 +115,22 @@ class RuntimeMemoryService:
 
         short_term_messages = await self._load_short_term_context(agent_id=agent_id, peer=peer)
         messages.extend(short_term_messages)
-        
+
         # OpenRouter / Mistral fix: Mistral rejects requests where 'human' directly follows 'tool'.
-        # If the last message before the new user input is a 'tool' message (meaning the agent didn't 
+        # If the last message before the new user input is a 'tool' message (meaning the agent didn't
         # get to reply after a tool execution), we inject a dummy 'ai' message to satisfy the LLM constraints.
         if messages:
             last_msg_type = messages[-1].get("type", messages[-1].get("role", ""))
             if last_msg_type == "tool":
-                messages.append({
-                    "type": "ai",
-                    "role": "assistant",
-                    "content": "The tool executed, but the user interrupted before I could reply."
-                })
+                messages.append(
+                    {
+                        "type": "ai",
+                        "role": "assistant",
+                        "content": "The tool executed, but the user interrupted before I could reply.",
+                    }
+                )
 
-        messages.append({
-            "type": "human",
-            "role": MemoryRole.USER.value, 
-            "content": user_text
-        })
+        messages.append({"type": "human", "role": MemoryRole.USER.value, "content": user_text})
         return self._fit_token_budget(messages)
 
     async def save_messages(
@@ -184,6 +182,7 @@ class RuntimeMemoryService:
             return await self._long_term.search(agent_id=agent_id, query=query)
         except Exception:
             import logging
+
             logger = logging.getLogger("mimic42.memory")
             logger.warning("Failed to search long-term memory", exc_info=True)
             return []
@@ -195,6 +194,7 @@ class RuntimeMemoryService:
             content = message.get("content", "")
             if isinstance(content, list):
                 import json
+
                 content_str = json.dumps(content, ensure_ascii=False)
             else:
                 content_str = str(content)
