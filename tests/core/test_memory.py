@@ -43,6 +43,7 @@ class FakeShortTermMemory:
         agent_id: UUID,
         peer: str,
         messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None:
         self.saved_messages.append(messages)
 

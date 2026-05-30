@@ -9,6 +9,7 @@ from pydantic import SecretStr
 
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import AgentRuntimeConfig, LangChainAgentLike
+from mimic42.integrations.agent_response_schema import AgentResponse
 
 
 class LangChainGraphAgent:
@@ -47,5 +48,6 @@ def build_langchain_agent(
             model=model,
             tools=tools or [],
             system_prompt=config.combined_prompt,
+            response_format=AgentResponse,
         )
     )

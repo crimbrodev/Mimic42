@@ -42,6 +42,7 @@ class ShortTermMemoryStore(Protocol):
         agent_id: UUID,
         peer: str,
         messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None: ...
 
 
@@ -73,6 +74,7 @@ class MemoryServiceLike(Protocol):
         peer: str,
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None: ...
 
 
@@ -140,6 +142,7 @@ class RuntimeMemoryService:
         peer: str,
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
@@ -148,11 +151,17 @@ class RuntimeMemoryService:
                 agent_id=agent_id,
                 peer=peer,
                 messages=new_messages,
+                structured_response=structured_response,
             )
 
         if self._long_term is not None:
             user_text = _extract_last_user_text(output_messages)
             assistant_text = _extract_last_assistant_text(output_messages)
+            # With structured output the final AIMessage has empty content;
+            # fall back to the structured response text so long-term memory
+            # still captures the assistant reply.
+            if not assistant_text and structured_response is not None:
+                assistant_text = structured_response.get("text", "")
             if user_text or assistant_text:
                 await self._long_term.save_turn(
                     agent_id=agent_id,
