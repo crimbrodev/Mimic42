@@ -246,7 +246,8 @@ class FakeTelethonClient:
         msg.id = ids if isinstance(ids, int) else 777
         msg.text = "Mock message text"
         msg.media = None
-
+        msg.reply_markup = None
+        
         # Build reply_markup for button tests
         callback_btn = MagicMock(spec=types.KeyboardButtonCallback)
         callback_btn.text = "Yes"
@@ -390,6 +391,7 @@ class FakeTelethonClient:
             msg.date = datetime.now()
             msg.text = "Mock message text"
             msg.media = None
+            msg.reply_markup = None
             yield msg
 
         return gen()
@@ -583,7 +585,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(client)
 
-    assert len(tools) == 71
+    assert len(tools) == 89
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "view_image" in tool_names
