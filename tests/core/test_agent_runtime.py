@@ -62,23 +62,39 @@ class FakeTelegramClient:
 
 
 class FakeLangChainAgent:
-    def __init__(self, response: str = "agent response") -> None:
+    def __init__(
+        self,
+        response: str = "agent response",
+        structured_response: dict[str, Any] | None = None,
+    ) -> None:
         self.response = response
+        self.structured_response = structured_response
         self.inputs: list[dict[str, object]] = []
 
     async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
         self.inputs.append(input_data)
-        return {
+        result: dict[str, object] = {
             "messages": [
                 {"role": "user", "content": "ignored"},
                 {"role": "assistant", "content": self.response},
             ]
         }
+        if self.structured_response is not None:
+            result["structured_response"] = self.structured_response
+        return result
 
 
 class FakeRuntimeMemoryService:
     def __init__(self) -> None:
-        self.saved_messages: list[tuple[UUID, str, list[dict[str, Any]], list[dict[str, Any]]]] = []
+        self.saved_messages: list[
+            tuple[
+                UUID,
+                str,
+                list[dict[str, Any]],
+                list[dict[str, Any]],
+                dict[str, Any] | None,
+            ]
+        ] = []
 
     async def build_messages(
         self,
@@ -96,8 +112,11 @@ class FakeRuntimeMemoryService:
         peer: str,
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None:
-        self.saved_messages.append((agent_id, peer, input_messages, output_messages))
+        self.saved_messages.append(
+            (agent_id, peer, input_messages, output_messages, structured_response)
+        )
 
 
 class FakeReplyTo:
@@ -239,6 +258,63 @@ async def test_trigger_persists_turn_to_memory() -> None:
     # input_messages has the user message, output_messages has the assistant response
     assert any(m["role"] == "user" and m["content"] == "remember this" for m in saved[2])
     assert any(m["role"] == "assistant" and m["content"] == "memory reply" for m in saved[3])
+
+
+@pytest.mark.asyncio
+async def test_trigger_uses_structured_response_when_present() -> None:
+    memory = FakeRuntimeMemoryService()
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(
+            response="ignored text",
+            structured_response={
+                "text": "structured hello",
+                "send_any_message": True,
+                "reply_to": 99,
+            },
+        ),
+        memory_service=memory,
+    )
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="hi"))
+
+    assert result.response_text == "structured hello"
+    assert telegram.sent_messages == [("me", "structured hello")]
+
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[4] == {
+        "text": "structured hello",
+        "send_any_message": True,
+        "reply_to": 99,
+    }
+
+
+@pytest.mark.asyncio
+async def test_trigger_uses_structured_response_send_any_false() -> None:
+    memory = FakeRuntimeMemoryService()
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(
+            response="ignored text",
+            structured_response={
+                "text": "should not send",
+                "send_any_message": False,
+                "reply_to": None,
+            },
+        ),
+        memory_service=memory,
+    )
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="hi"))
+
+    assert result.response_text == "should not send"
+    assert telegram.sent_messages == []
+    assert len(memory.saved_messages) == 1
 
 
 @pytest.mark.asyncio

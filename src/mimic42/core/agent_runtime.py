@@ -312,11 +312,23 @@ class MimicAgentRuntime:
             # Convert output BaseMessage objects to plain dicts for storage/comparison.
             output_messages = _messages_to_dicts(response)
 
-            # Interpret structured response if provided by the agent. Expected format:
-            # { "send_any_message": bool, "text": str, "reply_to": int|str }
-            send_any, response_text, reply_to = _interpret_agent_response(response)
-            display_text = response_text[:100] if response_text else "None"
-            logger.debug(f"Interpreted response: send_any={send_any}, text={display_text}")
+            # Prefer validated structured_response from LangChain's response_format.
+            # Fallback to legacy _interpret_agent_response for backward compat.
+            structured = _extract_structured_response(response)
+            if structured is not None:
+                send_any = bool(structured.get("send_any_message", True))
+                response_text = structured.get("text", "")
+                reply_to = structured.get("reply_to")
+                logger.debug(
+                    "Structured response: send_any=%s, text=%s, reply_to=%s",
+                    send_any,
+                    response_text[:100] if response_text else "None",
+                    reply_to,
+                )
+            else:
+                send_any, response_text, reply_to = _interpret_agent_response(response)
+                display_text = response_text[:100] if response_text else "None"
+                logger.debug(f"Interpreted response: send_any={send_any}, text={display_text}")
 
             # Don't send empty messages
             if send_any and not response_text:
@@ -379,6 +391,7 @@ class MimicAgentRuntime:
                 peer=trigger.peer,
                 input_messages=messages,
                 output_messages=output_messages,
+                structured_response=structured,
             )
 
         return AgentTriggerResult(
@@ -1008,6 +1021,28 @@ def _get_content(value: object) -> str | None:
                     parts.append(text)
         if parts:
             return "\n".join(parts)
+    return None
+
+
+def _extract_structured_response(response: object) -> dict[str, Any] | None:
+    """Extract the validated structured response from a LangChain agent result.
+
+    When ``create_agent`` is configured with ``response_format``, the final
+    state dict contains a ``structured_response`` key holding the parsed
+    schema instance (Pydantic model, dataclass, dict, etc.).
+
+    Returns the response as a plain dict, or ``None`` if absent / unsupported.
+    """
+    if not isinstance(response, Mapping):
+        return None
+    resp_map = cast("Mapping[str, Any]", response)
+    structured = resp_map.get("structured_response")
+    if structured is None:
+        return None
+    if isinstance(structured, BaseModel):
+        return structured.model_dump()
+    if isinstance(structured, Mapping):
+        return dict(structured)
     return None
 
 

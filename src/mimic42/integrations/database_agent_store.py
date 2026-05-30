@@ -128,18 +128,27 @@ class DatabaseAgentStore:
                 .order_by(AgentMessageModel.created_at.desc())
                 .limit(limit)
             )
-            return [
-                AgentMessageRecord(
-                    id=message.id,
-                    agent_id=message.agent_id,
-                    peer=str(message.payload.get("peer", "")),
-                    role=message.role,
-                    content=message.content,
-                    direction=message.direction,
-                    created_at=message.created_at,
+            records = []
+            for message in messages:
+                content = message.content
+                # With structured output the assistant message content is empty.
+                # Present the human-readable text from the stored schema instead.
+                if not content and message.role == "assistant":
+                    structured = message.payload.get("structured_response")
+                    if isinstance(structured, dict):
+                        content = structured.get("text", "")
+                records.append(
+                    AgentMessageRecord(
+                        id=message.id,
+                        agent_id=message.agent_id,
+                        peer=str(message.payload.get("peer", "")),
+                        role=message.role,
+                        content=content,
+                        direction=message.direction,
+                        created_at=message.created_at,
+                    )
                 )
-                for message in messages
-            ]
+            return records
 
     async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
         async with self._session_factory() as db_session:

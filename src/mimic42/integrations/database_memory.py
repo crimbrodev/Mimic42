@@ -65,6 +65,7 @@ class DatabaseShortTermMemory:
         agent_id: UUID,
         peer: str,
         messages: list[dict[str, Any]],
+        structured_response: dict[str, Any] | None = None,
     ) -> None:
         """Save a list of LangChain message dicts to the database."""
         from datetime import datetime, timedelta
@@ -92,6 +93,14 @@ class DatabaseShortTermMemory:
                     payload["name"] = msg["name"]
                 if "id" in msg:
                     payload["id"] = msg["id"]
+
+                # Attach structured response to the last assistant message
+                if structured_response is not None:
+                    direction = self._resolve_direction(role, msg)
+                    if direction == "agent_response":
+                        payload["structured_response"] = structured_response
+                        # Only attach once — to the last assistant message
+                        structured_response = None
 
                 # Map to database direction enum
                 direction = self._resolve_direction(role, msg)
