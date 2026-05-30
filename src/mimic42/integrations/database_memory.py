@@ -41,12 +41,6 @@ class DatabaseShortTermMemory:
                 if role == "assistant": msg_type = "ai"
                 
                 content = model.content
-                import json
-                try:
-                    if content.startswith("[") and content.endswith("]"):
-                        content = json.loads(content)
-                except Exception:
-                    pass
 
                 msg: dict[str, Any] = {"type": msg_type, "content": content}
                 if msg_type == "tool" or role == "tool":

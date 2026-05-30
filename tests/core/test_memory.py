@@ -26,7 +26,11 @@ class FakeShortTermMemory:
         since: datetime,
     ) -> list[dict[str, Any]]:
         return [
-            {"role": message.role.value, "content": message.content}
+            {
+                "type": "human" if message.role == MemoryRole.USER else "ai",
+                "role": message.role.value, 
+                "content": message.content
+            }
             for message in self._messages
             if message.agent_id == agent_id
             and message.peer == peer
@@ -90,11 +94,12 @@ async def test_memory_service_filters_three_hour_context_and_adds_long_term_cont
 
     assert messages == [
         {
+            "type": "system",
             "role": "system",
             "content": "Long-term memory:\n- remembered:hello",
         },
-        {"role": "assistant", "content": "recent"},
-        {"role": "user", "content": "hello"},
+        {"type": "ai", "role": "assistant", "content": "recent"},
+        {"type": "human", "role": "user", "content": "hello"},
     ]
 
 
@@ -135,8 +140,8 @@ async def test_memory_service_enforces_token_limit_from_newest_messages() -> Non
     )
 
     assert messages == [
-        {"role": "assistant", "content": "second"},
-        {"role": "user", "content": "current"},
+        {"type": "ai", "role": "assistant", "content": "second"},
+        {"type": "human", "role": "user", "content": "current"},
     ]
 
 

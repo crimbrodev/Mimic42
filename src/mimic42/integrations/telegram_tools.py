@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Callable, Awaitable, ParamSpec, TypeVar
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -1255,7 +1255,7 @@ class TelegramToolbox:
     async def get_chat_info(self, peer: str) -> dict[str, Any]:
         """Get high-level details of a group/channel (participants, about description)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_peer(peer, as_input=False)
             if isinstance(entity, types.User):
                 return {"error": "Target entity is a user, not a chat/channel"}
 
@@ -2272,6 +2272,54 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
+    """
+    Wrap a toolbox method so it always returns a JSON string.
+    This is required for OpenRouter SDK compatibility, which expects
+    ToolMessage.content to be a string.
+    """
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
+        result = await coro(*args, **kwargs)
+        if isinstance(result, str):
+            return result
+        if isinstance(result, (dict, list)):
+            return json.dumps(result, ensure_ascii=False)
+        return str(result)
+        
+    import inspect
+    wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
+    wrapper.__name__ = getattr(coro, "__name__", "wrapper")
+    wrapper.__doc__ = getattr(coro, "__doc__", None)
+    return wrapper
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
+    """
+    Wrap a toolbox method so it always returns a JSON string.
+    This is required for OpenRouter SDK compatibility, which expects
+    ToolMessage.content to be a string.
+    """
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
+        result = await coro(*args, **kwargs)
+        if isinstance(result, str):
+            return result
+        if isinstance(result, (dict, list)):
+            import json
+            return json.dumps(result, ensure_ascii=False)
+        return str(result)
+        
+    import inspect
+    wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
+    wrapper.__name__ = getattr(coro, "__name__", "wrapper")
+    wrapper.__doc__ = getattr(coro, "__doc__", None)
+    return wrapper
 
 def build_telegram_langchain_tools(
     client: TelethonRequestClient,
